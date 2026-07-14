@@ -1,5 +1,15 @@
 @import './worklive-original.css';
 
+/* Variables de identidad configurables desde Personalización. */
+html,body,.shell,.main{background:var(--wl-page)!important;color:var(--wl-text)}
+.worklive-sidebar{background:var(--wl-sidebar)!important;color:var(--wl-sidebar-text)!important}
+.worklive-sidebar .worklive-brand-icon--filled{background:var(--wl-logo-background)!important}.worklive-sidebar .worklive-brand-icon--transparent{background:transparent!important;box-shadow:none!important}.worklive-sidebar [class~="bg-indigo-600"]{background:var(--wl-primary)!important}
+.worklive-sidebar [class~="text-slate-300"],.worklive-sidebar [class~="text-slate-400"],.worklive-sidebar [class~="text-slate-500"]{color:var(--wl-sidebar-text)!important;opacity:.78}
+.worklive-sidebar [class~="bg-indigo-500/25"]{background:color-mix(in srgb,var(--wl-primary) 28%,transparent)!important}
+.app-section-hero{background:linear-gradient(120deg,var(--wl-sidebar) 0%,var(--wl-secondary) 58%,var(--wl-primary) 100%)!important}
+.app-section-hero-actions button,.app-section-hero-actions a{background:var(--wl-primary)!important}.app-section-hero-actions button{background:var(--wl-surface)!important;color:var(--wl-secondary)!important}
+.brand-color-control{transition:border-color .16s ease,box-shadow .16s ease}.brand-color-control:focus-within{border-color:var(--wl-primary)!important;box-shadow:0 0 0 3px color-mix(in srgb,var(--wl-primary) 13%,transparent)}
+
 /* Administración: ritmo, densidad y lectura de tabla. */
 .settings-workspace>section.mb-7{margin-bottom:2rem!important}
 .settings-workspace>section.mb-7>div:first-child{padding:1.25rem 1.5rem!important}

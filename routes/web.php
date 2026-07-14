@@ -32,6 +32,8 @@ Route::middleware('worklive.web')->group(function () {
     Route::get('/settings', [DashboardController::class, 'settings'])->name('settings');
     Route::post('/settings', [DashboardController::class, 'saveSettings'])->name('settings.save');
     Route::get('/settings/administrators', [DashboardController::class, 'administrators'])->name('settings.admins.index');
+    Route::get('/settings/personalization', [DashboardController::class, 'personalization'])->name('settings.personalization');
+    Route::post('/settings/personalization', [DashboardController::class, 'savePersonalization'])->name('settings.personalization.save');
     Route::post('/settings/admins', [DashboardController::class, 'addAdmin'])->name('settings.admins.store');
     Route::delete('/settings/admins/{email}', [DashboardController::class, 'removeAdmin'])->name('settings.admins.delete');
 });

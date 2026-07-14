@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use Carbon\Carbon;
 use Dompdf\Dompdf;
@@ -435,6 +436,34 @@ class DashboardController extends Controller
         $settings = DB::table('company_settings')->where('company_id', config('worklive.company_id'))->first();
         $admins = DB::table('authorized_admins')->where('company_id', config('worklive.company_id'))->orderBy('email')->get();
         return view('settings.administrators', compact('settings', 'admins'));
+    }
+
+    public function personalization()
+    {
+        $settings = DB::table('company_settings')->where('company_id', config('worklive.company_id'))->first();
+        return view('settings.personalization', compact('settings'));
+    }
+
+    public function savePersonalization(Request $request)
+    {
+        $color = ['required', 'regex:/^#[0-9A-Fa-f]{6}$/'];
+        $data = $request->validate([
+            'brand_name' => ['required', 'string', 'max:100'], 'brand_subtitle' => ['nullable', 'string', 'max:160'],
+            'brand_icon' => ['nullable', 'file', 'mimes:png,jpg,jpeg,webp,ico', 'max:2048'],
+            'color_primary' => $color, 'color_secondary' => $color, 'color_accent' => $color, 'color_sidebar' => $color, 'color_sidebar_text' => $color, 'color_page' => $color, 'color_surface' => $color, 'color_text' => $color, 'color_logo_background' => $color,
+            'menu_dashboard' => ['required','string','max:80'], 'menu_employees' => ['required','string','max:80'], 'menu_reports' => ['required','string','max:80'], 'menu_policies' => ['required','string','max:80'], 'menu_time_clock' => ['required','string','max:80'], 'menu_settings' => ['required','string','max:80'], 'menu_system' => ['required','string','max:80'], 'menu_administrators' => ['required','string','max:80'], 'menu_personalization' => ['required','string','max:80'],
+        ]);
+        $companyId = config('worklive.company_id');
+        $current = DB::table('company_settings')->where('company_id', $companyId)->first();
+        $values = collect($data)->except('brand_icon')->map(fn ($value) => is_string($value) ? trim($value) : $value)->all();
+        $values['logo_background_enabled'] = $request->boolean('logo_background_enabled');
+        if ($request->hasFile('brand_icon')) {
+            if (!empty($current?->brand_icon_path) && Storage::disk('public')->exists($current->brand_icon_path)) Storage::disk('public')->delete($current->brand_icon_path);
+            $values['brand_icon_path'] = $request->file('brand_icon')->store('branding', 'public');
+        }
+        $values['updated_at'] = now();
+        DB::table('company_settings')->where('company_id', $companyId)->update($values);
+        return redirect()->route('settings.personalization')->with('success', 'Personalización aplicada correctamente.');
     }
 
     public function saveSettings(Request $request)

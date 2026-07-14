@@ -80,10 +80,15 @@ class DashboardController extends Controller
         if ($request->filled('search')) { $term = '%'.$request->string('search').'%'; $query->where(fn ($q) => $q->where('name','like',$term)->orWhere('department','like',$term)->orWhere('country','like',$term)->orWhere('client_key','like',$term)); }
         if ($request->filled('department') && $request->string('department') !== 'All') $query->where('department',$request->string('department'));
         if ($request->filled('status') && $request->string('status') !== 'All') $query->where('status',$request->string('status'));
-        $employees = $query->orderBy('name')->get();
+        $corporateTimezone = $this->corporateTimezone();
+        $employees = $query->orderBy('name')->get()->each(function ($employee) use ($corporateTimezone) {
+            $employee->last_active_display = $employee->last_active
+                ? Carbon::parse($employee->last_active, 'UTC')->setTimezone($corporateTimezone)
+                : null;
+        });
         $departments = DB::table('employees')->where('company_id', config('worklive.company_id'))->whereNotNull('department')->distinct()->orderBy('department')->pluck('department');
         $clientKeyPrefix = DB::table('company_settings')->where('company_id', config('worklive.company_id'))->value('client_key_prefix') ?: 'SAFEB';
-        return view('employees.index', compact('employees','departments','clientKeyPrefix'));
+        return view('employees.index', compact('employees','departments','clientKeyPrefix','corporateTimezone'));
     }
 
     public function storeEmployee(Request $request)

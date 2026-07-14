@@ -17,6 +17,8 @@
     };
     $formatSeconds = fn ($seconds) => floor($seconds / 3600).'h '.round(($seconds % 3600) / 60).'m';
     $isAdmin = filled(session('worklive_admin.email'));
+    $availableCount = $employees->whereIn('status', ['active', 'online'])->count();
+    $offlineCount = $employees->where('status', 'offline')->count();
 @endphp
 
 <div class="flex min-h-screen overflow-hidden bg-slate-100/45 font-sans text-slate-800">
@@ -24,17 +26,7 @@
     <main class="flex h-screen min-w-0 flex-1 flex-col overflow-hidden bg-slate-50/20">
         @include('partials.header',['title'=>'Nómina de Empleados'])
         <div class="flex-1 overflow-y-auto bg-slate-50/60 p-6 lg:p-8">
-            <section class="mb-6 flex flex-col justify-between gap-4 lg:flex-row lg:items-end">
-                <div>
-                    <p class="flex items-center gap-2 font-mono text-[10px] font-bold uppercase tracking-[.16em] text-indigo-500"><i class="fa-solid fa-users-viewfinder" aria-hidden="true"></i> Operación de equipo</p>
-                    <h2 class="mt-1 text-2xl font-black tracking-tight text-slate-950">Lista de empleados</h2>
-                    <p class="mt-1 text-xs text-slate-500">Consulta estados, actividad y vinculación de cada colaborador en tiempo real.</p>
-                </div>
-                <div class="flex flex-wrap gap-2">
-                    <a href="{{ route('employees', request()->query()) }}" class="inline-flex items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-xs font-bold text-slate-600 shadow-sm transition hover:border-indigo-200 hover:text-indigo-700"><i class="fa-solid fa-rotate-right" aria-hidden="true"></i> Refrescar</a>
-                    <button type="button" onclick="window.openEmployeeCrud?.()" class="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-xs font-bold text-white shadow-md shadow-indigo-200 transition hover:bg-indigo-500"><i class="fa-solid fa-user-plus" aria-hidden="true"></i> Nuevo empleado</button>
-                </div>
-            </section>
+            <section class="app-section-hero mb-6"><div class="app-section-hero-copy"><p><i class="fa-solid fa-users-viewfinder" aria-hidden="true"></i> Operación de equipo</p><h2>Lista de empleados</h2><span>Consulta estados, actividad y vínculo de cada colaborador en tiempo real.</span></div><div class="app-section-hero-metrics"><div><i class="fa-solid fa-users" aria-hidden="true"></i><small>Equipo</small><b>{{ $employees->count() }}</b></div><div><i class="fa-solid fa-signal" aria-hidden="true"></i><small>Disponibles</small><b>{{ $availableCount }}</b></div><div><i class="fa-solid fa-power-off" aria-hidden="true"></i><small>Offline</small><b>{{ $offlineCount }}</b></div></div><div class="app-section-hero-actions"><a href="{{ route('employees', request()->query()) }}"><i class="fa-solid fa-rotate-right" aria-hidden="true"></i><span>Refrescar</span></a><button type="button" onclick="window.openEmployeeCrud?.()"><i class="fa-solid fa-user-plus" aria-hidden="true"></i><span>Nuevo empleado</span></button></div></section>
 
             @if(session('success'))
                 <div class="mb-5 flex items-center gap-2 rounded-xl border border-emerald-100 bg-emerald-50 p-4 text-xs font-semibold text-emerald-800"><i class="fa-solid fa-circle-check text-emerald-500" aria-hidden="true"></i>{{ session('success') }}</div>

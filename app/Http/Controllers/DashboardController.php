@@ -427,8 +427,14 @@ class DashboardController extends Controller
     public function settings()
     {
         $settings = DB::table('company_settings')->where('company_id', config('worklive.company_id'))->first();
+        return view('settings.index', compact('settings'));
+    }
+
+    public function administrators()
+    {
+        $settings = DB::table('company_settings')->where('company_id', config('worklive.company_id'))->first();
         $admins = DB::table('authorized_admins')->where('company_id', config('worklive.company_id'))->orderBy('email')->get();
-        return view('settings.index', compact('settings', 'admins'));
+        return view('settings.administrators', compact('settings', 'admins'));
     }
 
     public function saveSettings(Request $request)
@@ -442,14 +448,20 @@ class DashboardController extends Controller
 
     public function addAdmin(Request $request)
     {
-        $data=$request->validate(['email'=>['required','email','max:255'],'password'=>['nullable','string','min:8','max:120']]);
-        DB::table('authorized_admins')->updateOrInsert(['email'=>strtolower($data['email'])],['company_id'=>config('worklive.company_id'),'added_at'=>now(),'added_by'=>session('worklive_admin.email','admin'),'password_hash'=>!empty($data['password']) ? password_hash($data['password'],PASSWORD_BCRYPT) : null]);
-        return redirect()->route('settings')->with('success','Administrador guardado correctamente.');
+        $data = $request->validate(['email'=>['required','email','max:255'],'password'=>['required','string','min:8','max:120'],'role'=>['required','in:super_admin,admin,rh']]);
+        $email = strtolower($data['email']);
+        $companyId = config('worklive.company_id');
+        $existing = DB::table('authorized_admins')->where('company_id', $companyId)->where('email', $email)->first();
+        $role = $existing?->is_super_admin ? 'super_admin' : $data['role'];
+        DB::table('authorized_admins')->updateOrInsert(['company_id'=>$companyId,'email'=>$email],['added_at'=>$existing?->added_at ?? now(),'added_by'=>$existing?->added_by ?? session('worklive_admin.email','admin'),'password_hash'=>password_hash($data['password'],PASSWORD_BCRYPT),'role'=>$role,'is_super_admin'=>$role === 'super_admin']);
+        return redirect()->route('settings.admins.index')->with('success','Administrador guardado correctamente.');
     }
 
     public function removeAdmin(string $email)
     {
-        $email=urldecode($email); if (strtolower($email)===strtolower(env('ADMIN_BOOTSTRAP_EMAIL','admin@empresa.com'))) return back()->withErrors(['admin'=>'No se puede eliminar el administrador principal.']);
-        DB::table('authorized_admins')->where('company_id',config('worklive.company_id'))->where('email',$email)->delete(); return redirect()->route('settings')->with('success','Administrador eliminado.');
+        $email = urldecode($email);
+        $admin = DB::table('authorized_admins')->where('company_id', config('worklive.company_id'))->where('email', $email)->first();
+        if (!$admin || $admin->is_super_admin || strtolower($email) === strtolower(env('ADMIN_BOOTSTRAP_EMAIL', 'admin@empresa.com'))) return back()->withErrors(['admin'=>'No se puede eliminar el super administrador.']);
+        DB::table('authorized_admins')->where('company_id',config('worklive.company_id'))->where('email',$email)->delete(); return redirect()->route('settings.admins.index')->with('success','Administrador eliminado.');
     }
 }

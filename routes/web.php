@@ -31,6 +31,7 @@ Route::middleware('worklive.web')->group(function () {
     Route::get('/hr/time-clock/export', [DashboardController::class, 'exportTimeClock'])->name('time-clock.export');
     Route::get('/settings', [DashboardController::class, 'settings'])->name('settings');
     Route::post('/settings', [DashboardController::class, 'saveSettings'])->name('settings.save');
+    Route::get('/settings/administrators', [DashboardController::class, 'administrators'])->name('settings.admins.index');
     Route::post('/settings/admins', [DashboardController::class, 'addAdmin'])->name('settings.admins.store');
     Route::delete('/settings/admins/{email}', [DashboardController::class, 'removeAdmin'])->name('settings.admins.delete');
 });

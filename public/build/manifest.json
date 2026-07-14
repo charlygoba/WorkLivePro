@@ -1,0 +1,17 @@
+{
+  "resources/css/app.css": {
+    "file": "assets/app-gDSlwzG8.css",
+    "src": "resources/css/app.css",
+    "isEntry": true,
+    "name": "app",
+    "names": [
+      "app.css"
+    ]
+  },
+  "resources/js/employee-profile.js": {
+    "file": "assets/employee-profile-BNN4fUAo.js",
+    "name": "employee-profile",
+    "src": "resources/js/employee-profile.js",
+    "isEntry": true
+  }
+}

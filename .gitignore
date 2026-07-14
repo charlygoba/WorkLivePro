@@ -1,0 +1,26 @@
+*.log
+.DS_Store
+.env
+.env.backup
+.env.production
+.phpactor.json
+.phpunit.result.cache
+/.fleet
+/.idea
+/.nova
+/.phpunit.cache
+/.vscode
+/.zed
+/auth.json
+/node_modules
+# Los assets compilados de Vite se versionan para permitir despliegues sin Node.js.
+# No agregar /public/build a este archivo.
+/public/hot
+/public/storage
+/storage/*.key
+/storage/pail
+/storage/PsySH
+/vendor
+Homestead.json
+Homestead.yaml
+Thumbs.db

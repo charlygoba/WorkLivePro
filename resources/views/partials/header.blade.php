@@ -6,13 +6,13 @@
     <h1 class="text-xl font-bold tracking-tight text-slate-800">{{ $title ?? 'WorkLivePro' }}</h1>
     <div class="flex items-center gap-3 sm:gap-4">
         <div class="hidden lg:flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 font-mono text-xs font-medium text-slate-500" title="Zona horaria corporativa: {{ $corporateTimezone }}">
-            <span>◷</span>
+            <i class="fa-regular fa-clock" aria-hidden="true"></i>
             <span>{{ $corporateNow->locale('es')->isoFormat('D MMM YYYY') }}</span>
             <span class="text-slate-300">|</span>
             <span id="live-clock" class="font-bold text-slate-700">{{ $corporateNow->format('H:i:s') }}</span>
         </div>
         <div class="hidden xl:flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-1.5 font-mono text-[10px] font-semibold text-amber-800" title="Referencia técnica del reloj del servidor. Los eventos se almacenan en UTC y se muestran con la zona corporativa.">
-            <span>◉</span>
+            <i class="fa-solid fa-server" aria-hidden="true"></i>
             <span>Servidor UTC</span>
             <span id="server-clock" class="font-bold">{{ $serverNow->format('H:i:s') }}</span>
         </div>

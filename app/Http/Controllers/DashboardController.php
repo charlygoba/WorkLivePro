@@ -77,9 +77,16 @@ class DashboardController extends Controller
     public function employees(Request $request)
     {
         $query = DB::table('employees')->where('company_id', config('worklive.company_id'));
-        if ($request->filled('search')) { $term = '%'.$request->string('search').'%'; $query->where(fn ($q) => $q->where('name','like',$term)->orWhere('department','like',$term)->orWhere('country','like',$term)->orWhere('client_key','like',$term)); }
-        if ($request->filled('department') && $request->string('department') !== 'All') $query->where('department',$request->string('department'));
-        if ($request->filled('status') && $request->string('status') !== 'All') $query->where('status',$request->string('status'));
+        $search = trim((string) $request->input('search', ''));
+        $department = trim((string) $request->input('department', 'All'));
+        $status = trim((string) $request->input('status', 'All'));
+
+        if ($search !== '') {
+            $term = '%'.$search.'%';
+            $query->where(fn ($q) => $q->where('name', 'like', $term)->orWhere('department', 'like', $term)->orWhere('country', 'like', $term)->orWhere('client_key', 'like', $term));
+        }
+        if ($department !== '' && $department !== 'All') $query->where('department', $department);
+        if ($status !== '' && $status !== 'All') $query->where('status', $status);
         $corporateTimezone = $this->corporateTimezone();
         $employees = $query->orderBy('name')->get()->each(function ($employee) use ($corporateTimezone) {
             $employee->last_active_display = $employee->last_active

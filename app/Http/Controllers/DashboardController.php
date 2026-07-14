@@ -444,6 +444,16 @@ class DashboardController extends Controller
         return view('settings.personalization', compact('settings'));
     }
 
+    public function brandIcon()
+    {
+        $path = DB::table('company_settings')->where('company_id', config('worklive.company_id'))->value('brand_icon_path');
+        abort_unless(is_string($path) && str_starts_with($path, 'branding/') && Storage::disk('public')->exists($path), 404);
+        return response()->file(Storage::disk('public')->path($path), [
+            'Cache-Control' => 'public, max-age=86400',
+            'X-Content-Type-Options' => 'nosniff',
+        ]);
+    }
+
     public function savePersonalization(Request $request)
     {
         $color = ['required', 'regex:/^#[0-9A-Fa-f]{6}$/'];

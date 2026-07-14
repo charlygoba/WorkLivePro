@@ -7,6 +7,7 @@ use Illuminate\Support\Facades\Route;
 Route::get('/login', [WebAuthController::class, 'showLogin'])->name('login');
 Route::post('/login', [WebAuthController::class, 'login'])->middleware('throttle:10,1')->name('login.store');
 Route::post('/logout', [WebAuthController::class, 'logout'])->name('logout');
+Route::get('/branding/icon', [DashboardController::class, 'brandIcon'])->name('branding.icon');
 
 Route::middleware('worklive.web')->group(function () {
     Route::get('/legacy-dashboard', [DashboardController::class, 'index']);

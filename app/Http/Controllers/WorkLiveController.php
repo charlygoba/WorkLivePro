@@ -11,6 +11,7 @@ use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
+use Carbon\Carbon;
 
 class WorkLiveController extends Controller
 {
@@ -153,7 +154,72 @@ class WorkLiveController extends Controller
     {
         $data = $request->validate(['events' => ['required', 'array', 'min:1', 'max:500']]);
         $results = [];
-        DB::transaction(function () use ($data, $request, &$results) { foreach ($data['events'] as $event) $results[] = $this->storeEvent(validator($event, $this->eventRules())->validate(), $request); });
+        $rows = [];
+        $employeeChanges = [];
+        $companyId = config('worklive.company_id');
+        $agent = $request->attributes->get('agent');
+
+        DB::transaction(function () use ($data, $request, &$results, &$rows, &$employeeChanges, $companyId, $agent) {
+            foreach ($data['events'] as $index => $payload) {
+                try {
+                    $event = validator($payload, $this->eventRules())->validate();
+                    $employee = Employee::where('company_id', $companyId)->find($event['employeeId']);
+                    if (! $employee) throw new \RuntimeException('employeeId no existe en MySQL');
+                    if ($agent && $agent->employee_id !== $employee->id) throw new \RuntimeException('El agente no pertenece al empleado indicado.');
+
+                    if (! empty($event['device']) && is_array($event['device'])) {
+                        $device = $this->upsertDevice($employee, $event['device'], $agent?->device_id);
+                        if ($agent && $agent->device_id !== $device->id) {
+                            $agent->forceFill(['device_id' => $device->id, 'last_seen_at' => now()])->saveQuietly();
+                        }
+                    }
+
+                    $id = 'evt-'.Str::lower(Str::random(24));
+                    $timestamp = Carbon::parse($event['timestamp'] ?? now());
+                    $duration = (int) ($event['duration'] ?? 0);
+                    $eventType = $event['eventType'];
+                    $employeeId = $employee->id;
+                    $rows[] = [
+                        'id' => $id,
+                        'company_id' => $companyId,
+                        'employee_id' => $employeeId,
+                        'employee_name' => $event['employeeName'] ?? $employee->name,
+                        'department' => $event['department'] ?? $employee->department,
+                        'event_timestamp' => $timestamp,
+                        'event_type' => $eventType,
+                        'app' => $event['app'] ?? null,
+                        'title' => $event['title'] ?? null,
+                        'domain' => $event['domain'] ?? null,
+                        'duration' => $duration,
+                        'agent_id' => $event['agentId'] ?? ($agent?->id),
+                    ];
+                    $employeeChanges[$employeeId]['employee'] = $employee;
+                    $employeeChanges[$employeeId]['active'] = ($employeeChanges[$employeeId]['active'] ?? 0) + ($eventType === 'active' ? $duration : 0);
+                    $employeeChanges[$employeeId]['idle'] = ($employeeChanges[$employeeId]['idle'] ?? 0) + ($eventType === 'idle' ? $duration : 0);
+                    $employeeChanges[$employeeId]['last'] = $rows[array_key_last($rows)];
+                    $results[] = ['eventId' => $id, 'employeeId' => $employeeId];
+                } catch (\Throwable $exception) {
+                    Log::warning('Evento omitido durante recepción masiva.', ['index' => $index, 'company_id' => $companyId, 'message' => $exception->getMessage()]);
+                    $results[] = ['error' => 'Evento rechazado', 'index' => $index];
+                }
+            }
+
+            foreach (array_chunk($rows, 250) as $chunk) DB::table('activity_events')->insert($chunk);
+
+            foreach ($employeeChanges as $change) {
+                $employee = $change['employee'];
+                $last = $change['last'];
+                $employee->forceFill([
+                    'status' => in_array($last['event_type'], ['active', 'startup'], true) ? 'online' : $last['event_type'],
+                    'last_active' => now(),
+                    'current_app' => $last['app'] ?? $employee->current_app,
+                    'current_title' => $last['title'] ?? $employee->current_title,
+                    'current_domain' => $last['domain'] ?? $employee->current_domain,
+                    'active_time_today' => $employee->active_time_today + $change['active'],
+                    'idle_time_today' => $employee->idle_time_today + $change['idle'],
+                ])->saveQuietly();
+            }
+        });
         return response()->json(['ok' => true, 'count' => count($results), 'results' => $results]);
     }
 

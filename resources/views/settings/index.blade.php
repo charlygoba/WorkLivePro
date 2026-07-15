@@ -31,6 +31,48 @@
             <div class="hidden"><textarea name="productive_apps_list">{{ old('productive_apps_list',$settings->productive_apps_list ?? '') }}</textarea><textarea name="unproductive_apps_list">{{ old('unproductive_apps_list',$settings->unproductive_apps_list ?? '') }}</textarea><textarea name="productive_domains_list">{{ old('productive_domains_list',$settings->productive_domains_list ?? '') }}</textarea><textarea name="unproductive_domains_list">{{ old('unproductive_domains_list',$settings->unproductive_domains_list ?? '') }}</textarea></div>
         </section>
     </form>
+
+    <section class="mt-8 space-y-5 rounded-2xl border border-slate-100 bg-white p-6 shadow-sm" id="aggregation-panel">
+        <div class="flex flex-col justify-between gap-4 md:flex-row md:items-start">
+            <div>
+                <h3 class="flex items-center gap-2 text-sm font-bold text-slate-900"><i class="fa-solid fa-database text-indigo-500" aria-hidden="true"></i> Mantenimiento de actividad</h3>
+                <p class="mt-1 max-w-3xl text-xs leading-5 text-slate-500">Consolida los eventos detallados en bloques de 5 minutos y resúmenes históricos. El cliente continúa usando el mismo endpoint y no se modifica ningún dato de la aplicación Windows.</p>
+            </div>
+            <span id="aggregation-status" class="rounded-full bg-slate-100 px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider text-slate-500">Sin ejecuciones</span>
+        </div>
+        <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+            <label class="space-y-1.5"><span class="block font-mono text-[10px] font-bold text-slate-400">CONSOLIDAR DESDE</span><input id="aggregation-from" class="{{ $input }}" type="date" value="{{ now()->subDays(30)->format('Y-m-d') }}"></label>
+            <label class="space-y-1.5"><span class="block font-mono text-[10px] font-bold text-slate-400">CONSOLIDAR HASTA</span><input id="aggregation-to" class="{{ $input }}" type="date" value="{{ now()->format('Y-m-d') }}"></label>
+        </div>
+        <label class="flex items-start gap-3 rounded-xl border border-amber-100 bg-amber-50 p-4 text-xs text-amber-900"><input id="aggregation-cleanup" class="mt-0.5 h-4 w-4 accent-indigo-600" type="checkbox"><span><b class="block">Consolidar y limpiar detalle mayor a 30 días</b><span class="mt-1 block text-amber-700">Solo elimina eventos después de confirmar la consolidación y conserva buckets y resúmenes.</span></span></label>
+        <div class="flex flex-col gap-3 border-t border-slate-100 pt-5 md:flex-row md:items-center md:justify-between"><div id="aggregation-detail" class="text-xs text-slate-500">La ejecución se procesa por bloques para evitar timeouts en cPanel.</div><button id="aggregation-start" type="button" class="inline-flex items-center justify-center gap-2 rounded-xl bg-indigo-600 px-5 py-3 text-xs font-bold text-white shadow-sm transition hover:bg-indigo-700 disabled:cursor-not-allowed disabled:opacity-60"><i class="fa-solid fa-layer-group" aria-hidden="true"></i><span>Consolidar eventos</span></button></div>
+    </section>
 </div></main></div>
-<script>document.querySelectorAll('[data-password-toggle]').forEach((button)=>button.addEventListener('click',()=>{const input=document.getElementById(button.dataset.passwordToggle);input.type=input.type==='password'?'text':'password';button.innerHTML=input.type==='password'?'<i class="fa-regular fa-eye"></i>':'<i class="fa-regular fa-eye-slash"></i>';}));</script>
+<script>
+document.querySelectorAll('[data-password-toggle]').forEach((button)=>button.addEventListener('click',()=>{const input=document.getElementById(button.dataset.passwordToggle);input.type=input.type==='password'?'text':'password';button.innerHTML=input.type==='password'?'<i class="fa-regular fa-eye"></i>':'<i class="fa-regular fa-eye-slash"></i>';}));
+(() => {
+    const start = document.getElementById('aggregation-start');
+    const status = document.getElementById('aggregation-status');
+    const detail = document.getElementById('aggregation-detail');
+    const csrf = document.querySelector('meta[name="csrf-token"]')?.content || '{{ csrf_token() }}';
+    const set = (label, text, tone = 'slate') => { const tones = {slate:'bg-slate-100 text-slate-500', indigo:'bg-indigo-100 text-indigo-700', emerald:'bg-emerald-100 text-emerald-700', red:'bg-red-100 text-red-700'}; status.textContent = label; status.className = `rounded-full px-3 py-1.5 text-[10px] font-bold uppercase tracking-wider ${tones[tone] || tones.slate}`; detail.textContent = text; };
+    const pump = async (id) => {
+        const response = await fetch(`{{ url('/settings/aggregation') }}/${id}/continue`, { method: 'POST', headers: {'X-CSRF-TOKEN': csrf, 'Accept': 'application/json'} });
+        const payload = await response.json();
+        if (!response.ok || !payload.ok) throw new Error(payload.error || 'No se pudo continuar la consolidación.');
+        const run = payload.run;
+        set(run.status === 'completed' ? 'Completada' : 'Procesando', `${run.processed_rows || 0} eventos procesados · ${run.bucket_rows || 0} grupos generados · ${run.deleted_rows || 0} eliminados`, run.status === 'completed' ? 'emerald' : 'indigo');
+        if (run.status !== 'completed') return window.setTimeout(() => pump(id), 120);
+        start.disabled = false;
+    };
+    start?.addEventListener('click', async () => {
+        start.disabled = true; set('Iniciando', 'Preparando el periodo y evitando ejecuciones simultáneas.', 'indigo');
+        try {
+            const response = await fetch('{{ route('settings.aggregation.start') }}', {method:'POST', headers:{'X-CSRF-TOKEN':csrf,'Content-Type':'application/json','Accept':'application/json'}, body: JSON.stringify({from:document.getElementById('aggregation-from').value,to:document.getElementById('aggregation-to').value,cleanup:document.getElementById('aggregation-cleanup').checked})});
+            const payload = await response.json(); if (!response.ok || !payload.ok) throw new Error(payload.message || payload.error || 'No se pudo iniciar.');
+            await pump(payload.run.id);
+        } catch (error) { set('Error', error.message, 'red'); start.disabled = false; }
+    });
+})();
+</script>
 @endsection

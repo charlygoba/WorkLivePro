@@ -32,6 +32,9 @@ Route::middleware('worklive.web')->group(function () {
     Route::get('/hr/time-clock/export', [DashboardController::class, 'exportTimeClock'])->name('time-clock.export');
     Route::get('/settings', [DashboardController::class, 'settings'])->name('settings');
     Route::post('/settings', [DashboardController::class, 'saveSettings'])->name('settings.save');
+    Route::get('/settings/aggregation/status', [DashboardController::class, 'aggregationStatus'])->name('settings.aggregation.status');
+    Route::post('/settings/aggregation/start', [DashboardController::class, 'startAggregation'])->name('settings.aggregation.start');
+    Route::post('/settings/aggregation/{id}/continue', [DashboardController::class, 'continueAggregation'])->name('settings.aggregation.continue');
     Route::get('/settings/administrators', [DashboardController::class, 'administrators'])->name('settings.admins.index');
     Route::get('/settings/personalization', [DashboardController::class, 'personalization'])->name('settings.personalization');
     Route::post('/settings/personalization', [DashboardController::class, 'savePersonalization'])->name('settings.personalization.save');

@@ -10,6 +10,7 @@ use Carbon\Carbon;
 use Dompdf\Dompdf;
 use PhpOffice\PhpSpreadsheet\Spreadsheet;
 use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
+use App\Services\ActivityAggregationService;
 
 class DashboardController extends Controller
 {
@@ -170,6 +171,9 @@ class DashboardController extends Controller
         $employee = DB::table('employees')->where('company_id', $company)->where('id', $id)->firstOrFail();
         $tab = (string) $request->query('tab', 'overview');
         $eventQuery = DB::table('activity_events')->where('company_id', $company)->where('employee_id', $id);
+        // El detalle crudo es una ventana de auditoría de 30 días. El histórico
+        // se consulta mediante summaries/buckets para no cargar años en memoria.
+        $eventQuery->where('event_timestamp', '>=', Carbon::now('UTC')->subDays(30));
         if ($request->filled('date_from')) $eventQuery->where('event_timestamp','>=',Carbon::parse($request->string('date_from'), $corporateTimezone)->startOfDay()->utc());
         if ($request->filled('date_to')) $eventQuery->where('event_timestamp','<=',Carbon::parse($request->string('date_to'), $corporateTimezone)->endOfDay()->utc());
         if ($request->filled('app')) $eventQuery->where('app','like','%'.$request->string('app').'%');
@@ -194,28 +198,79 @@ class DashboardController extends Controller
         $nowForEmployee = Carbon::now($timezone);
         $todayStart = $nowForEmployee->copy()->startOfDay();
         $weekStart = $nowForEmployee->copy()->startOfWeek(Carbon::MONDAY);
-        $periodEvents = DB::table('activity_events')
-            ->where('company_id', $company)
-            ->where('employee_id', $id)
-            ->whereBetween('event_timestamp', [$weekStart->copy()->utc(), $nowForEmployee->copy()->utc()])
-            ->get(['event_timestamp', 'event_type', 'duration']);
-        $inToday = fn ($event) => Carbon::parse($event->event_timestamp, 'UTC')->setTimezone($timezone)->greaterThanOrEqualTo($todayStart);
-        $sumTime = fn ($type, $onlyToday = false) => (int) $periodEvents
-            ->filter(fn ($event) => $event->event_type === $type && (!$onlyToday || $inToday($event)))
-            ->sum('duration');
-        $timeMetrics = [
-            'todayActive' => $sumTime('active', true),
-            'todayIdle' => $sumTime('idle', true),
-            'weekActive' => $sumTime('active'),
-            'weekIdle' => $sumTime('idle'),
+        $periodSummaries = DB::table('daily_summaries')->where('company_id', $company)->where('employee_id', $id)->whereBetween('summary_date', [$weekStart->toDateString(), $nowForEmployee->toDateString()])->get();
+        if ($periodSummaries->isNotEmpty()) {
+            $todaySummary = $periodSummaries->where('summary_date', $nowForEmployee->toDateString());
+            $timeMetrics = [
+                'todayActive' => (int) $todaySummary->sum('total_active_seconds'),
+                'todayIdle' => (int) $todaySummary->sum('total_idle_seconds'),
+                'weekActive' => (int) $periodSummaries->sum('total_active_seconds'),
+                'weekIdle' => (int) $periodSummaries->sum('total_idle_seconds'),
+            ];
+        } else {
+            $periodEvents = DB::table('activity_events')->where('company_id', $company)->where('employee_id', $id)->where('event_timestamp', '>=', Carbon::now('UTC')->subDays(30))->whereBetween('event_timestamp', [$weekStart->copy()->utc(), $nowForEmployee->copy()->utc()])->get(['event_timestamp', 'event_type', 'duration']);
+            $inToday = fn ($event) => Carbon::parse($event->event_timestamp, 'UTC')->setTimezone($timezone)->greaterThanOrEqualTo($todayStart);
+            $sumTime = fn ($type, $onlyToday = false) => (int) $periodEvents->filter(fn ($event) => $event->event_type === $type && (!$onlyToday || $inToday($event)))->sum('duration');
+            $timeMetrics = [
+                'todayActive' => $sumTime('active', true), 'todayIdle' => $sumTime('idle', true), 'weekActive' => $sumTime('active'), 'weekIdle' => $sumTime('idle'),
+            ];
+        }
+        $timeMetrics += [
             'weekStart' => $weekStart->format('d/m'),
             'today' => $nowForEmployee->format('d/m/Y'),
         ];
         $summaries = DB::table('daily_summaries')->where('company_id',$company)->where('employee_id',$id)->orderByDesc('summary_date')->limit(30)->get();
         $devices = DB::table('devices')->where('company_id', $company)->where('employee_id', $id)->orderByDesc('last_sync')->get();
-        $appTotals = $events->groupBy(fn($e) => $e->app ?: 'Sin aplicación')->map(fn($items) => $items->sum('duration'))->sortDesc()->take(8);
-        $domainTotals = $events->groupBy(fn($e) => $e->domain ?: 'Sin dominio')->map(fn($items) => $items->sum('duration'))->sortDesc()->take(8);
-        return view('employees.show', compact('employee', 'events', 'eventsPaginator', 'eventTotal', 'timeMetrics', 'summaries', 'devices', 'appTotals', 'domainTotals', 'corporateTimezone'));
+        $summaryFrom = Carbon::now($corporateTimezone)->subDays(30)->toDateString();
+        $summaryTo = Carbon::now($corporateTimezone)->toDateString();
+        $appTotals = DB::table('daily_app_summaries')->where('company_id', $company)->where('employee_id', $id)->whereBetween('summary_date', [$summaryFrom, $summaryTo])->get()->groupBy('app')->map(fn($items) => $items->sum(fn($item) => (int) $item->active_seconds + (int) $item->idle_seconds))->sortDesc()->take(8);
+        $domainTotals = DB::table('daily_domain_summaries')->where('company_id', $company)->where('employee_id', $id)->whereBetween('summary_date', [$summaryFrom, $summaryTo])->get()->groupBy('domain')->map(fn($items) => $items->sum(fn($item) => (int) $item->active_seconds + (int) $item->idle_seconds))->sortDesc()->take(8);
+        if ($appTotals->isEmpty()) $appTotals = $events->groupBy(fn($e) => $e->app ?: 'Sin aplicación')->map(fn($items) => $items->sum('duration'))->sortDesc()->take(8);
+        if ($domainTotals->isEmpty()) $domainTotals = $events->groupBy(fn($e) => $e->domain ?: 'Sin dominio')->map(fn($items) => $items->sum('duration'))->sortDesc()->take(8);
+        $bucketDateFrom = Carbon::now($corporateTimezone)->subDays(30)->toDateString();
+        $bucketDateTo = Carbon::now($corporateTimezone)->toDateString();
+        try {
+            $bucketDateFrom = Carbon::createFromFormat('Y-m-d', (string) $request->query('bucket_from', $bucketDateFrom), $corporateTimezone)->toDateString();
+            $bucketDateTo = Carbon::createFromFormat('Y-m-d', (string) $request->query('bucket_to', $bucketDateTo), $corporateTimezone)->toDateString();
+        } catch (\Throwable) {
+            // Mantener el periodo seguro por defecto si llega una fecha inválida.
+        }
+        if ($bucketDateFrom > $bucketDateTo) [$bucketDateFrom, $bucketDateTo] = [$bucketDateTo, $bucketDateFrom];
+        $bucketFromUtc = Carbon::parse($bucketDateFrom, $corporateTimezone)->startOfDay()->utc();
+        $bucketToUtc = Carbon::parse($bucketDateTo, $corporateTimezone)->endOfDay()->utc();
+        $consolidatedDays = DB::table('daily_summaries')->where('company_id', $company)->where('employee_id', $id)->whereBetween('summary_date', [$bucketDateFrom, $bucketDateTo])->orderByDesc('summary_date')->limit(31)->get();
+        $bucketSearch = trim((string) $request->query('bucket_search', ''));
+        $bucketSearchAliases = match (strtolower($bucketSearch)) {
+            'activo' => ['active', 'online'],
+            'inactivo', 'idle' => ['idle', 'inactive'],
+            'bloqueado' => ['locked', 'blocked'],
+            default => [],
+        };
+        $bucketQuery = DB::table('activity_5m_buckets')
+            ->where('company_id', $company)
+            ->where('employee_id', $id)
+            ->whereBetween('bucket_start_utc', [$bucketFromUtc, $bucketToUtc]);
+        if ($bucketSearch !== '') {
+            $bucketQuery->where(function ($query) use ($bucketSearch, $bucketSearchAliases) {
+                $query->where('app', 'like', '%'.$bucketSearch.'%')
+                    ->orWhere('domain', 'like', '%'.$bucketSearch.'%')
+                    ->orWhere('activity_title', 'like', '%'.$bucketSearch.'%')
+                    ->orWhere('event_type', 'like', '%'.$bucketSearch.'%');
+                if ($bucketSearchAliases !== []) $query->orWhereIn('event_type', $bucketSearchAliases);
+            });
+        }
+        $bucketSort = (string) $request->query('bucket_sort', 'time');
+        $bucketSortColumn = match ($bucketSort) {
+            'application' => 'app',
+            'domain' => 'domain',
+            'status' => 'event_type',
+            'events' => 'event_count',
+            'duration' => DB::raw('(active_seconds + idle_seconds)'),
+            default => 'bucket_start_utc',
+        };
+        $bucketDirection = $request->query('bucket_direction', 'desc') === 'asc' ? 'asc' : 'desc';
+        $consolidatedBuckets = $bucketQuery->orderBy($bucketSortColumn, $bucketDirection)->limit(1000)->get()->each(fn($bucket) => $bucket->display_start = Carbon::parse($bucket->bucket_start_utc, 'UTC')->setTimezone($corporateTimezone));
+        return view('employees.show', compact('employee', 'events', 'eventsPaginator', 'eventTotal', 'timeMetrics', 'summaries', 'devices', 'appTotals', 'domainTotals', 'corporateTimezone', 'consolidatedDays', 'consolidatedBuckets', 'bucketDateFrom', 'bucketDateTo'));
     }
 
     public function updateDevice(Request $request, string $employeeId, string $deviceId)
@@ -233,7 +288,7 @@ class DashboardController extends Controller
         $to = (string) $request->query('date_to', $request->query('filter_date', now($corporateTimezone)->toDateString()));
         if ($from > $to) [$from, $to] = [$to, $from];
         $tab = (string) $request->query('tab', 'overview');
-        if (!in_array($tab, ['overview', 'attendance', 'productivity', 'incidents'], true)) $tab = 'overview';
+        if (!in_array($tab, ['overview', 'attendance', 'productivity', 'consolidated', 'incidents'], true)) $tab = 'overview';
         $query = DB::table('daily_summaries')->where('company_id', $company)->whereBetween('summary_date', [$from, $to]);
         $this->applyReportFilters($query, $request);
         $summaries = $query->orderByDesc('summary_date')->orderBy('employee_name')->get();
@@ -263,7 +318,8 @@ class DashboardController extends Controller
         $selectedIds = $employeeRows->pluck('employee_id')->filter()->values();
         $hasDimensionFilter = collect(['employee_id', 'department', 'country'])
             ->contains(fn ($field) => ($value = trim((string) $request->query($field, 'All'))) !== '' && $value !== 'All');
-        $incidentQuery = DB::table('activity_events')->where('company_id', $company)->whereBetween('event_timestamp', [Carbon::parse($from, $corporateTimezone)->startOfDay()->utc(), Carbon::parse($to, $corporateTimezone)->endOfDay()->utc()]);
+        $incidentFrom = Carbon::parse($from, $corporateTimezone)->startOfDay()->utc()->max(Carbon::now('UTC')->subDays(30));
+        $incidentQuery = DB::table('activity_events')->where('company_id', $company)->whereBetween('event_timestamp', [$incidentFrom, Carbon::parse($to, $corporateTimezone)->endOfDay()->utc()]);
         if ($selectedIds->isNotEmpty()) $incidentQuery->whereIn('employee_id', $selectedIds);
         elseif ($hasDimensionFilter) $incidentQuery->whereRaw('1 = 0');
         $incidents = $incidentQuery->whereIn('event_type', ['locked', 'blocked', 'blocked-site'])->orderByDesc('event_timestamp')->limit(250)->get()
@@ -275,7 +331,11 @@ class DashboardController extends Controller
         $departments = (clone $base)->whereNotNull('department')->distinct()->orderBy('department')->pluck('department');
         $countries = (clone $base)->whereNotNull('country')->distinct()->orderBy('country')->pluck('country');
         $attendanceMetrics = (object) ['punctual'=>$attendanceRows->sum('punctual_days'),'late'=>$attendanceRows->sum('late_days'),'early'=>$attendanceRows->sum('early_days'),'compliance'=>$attendanceRows->avg('compliance') ? (int) round($attendanceRows->avg('compliance')) : 0];
-        return view('reports.index', compact('summaries', 'employeeRows', 'attendanceRows', 'attendanceMetrics', 'incidents', 'metrics', 'employees', 'departments', 'countries', 'corporateTimezone', 'from', 'to', 'tab', 'workStart', 'workEnd', 'lateGrace', 'earlyGrace'));
+        $consolidatedIds = $summaries->pluck('employee_id')->unique()->values();
+        $consolidatedApps = DB::table('daily_app_summaries')->where('company_id', $company)->whereBetween('summary_date', [$from, $to])->when($consolidatedIds->isNotEmpty(), fn($q) => $q->whereIn('employee_id', $consolidatedIds))->when($consolidatedIds->isEmpty(), fn($q) => $q->whereRaw('1 = 0'))->select('app', DB::raw('SUM(active_seconds + idle_seconds) AS seconds'), DB::raw('SUM(event_count) AS events'))->groupBy('app')->orderByDesc('seconds')->limit(12)->get();
+        $consolidatedDomains = DB::table('daily_domain_summaries')->where('company_id', $company)->whereBetween('summary_date', [$from, $to])->when($consolidatedIds->isNotEmpty(), fn($q) => $q->whereIn('employee_id', $consolidatedIds))->when($consolidatedIds->isEmpty(), fn($q) => $q->whereRaw('1 = 0'))->select('domain', DB::raw('SUM(active_seconds + idle_seconds) AS seconds'), DB::raw('SUM(event_count) AS events'))->groupBy('domain')->orderByDesc('seconds')->limit(12)->get();
+        $consolidatedBuckets = DB::table('activity_5m_buckets')->where('company_id', $company)->whereBetween('bucket_start_utc', [Carbon::parse($from, $corporateTimezone)->startOfDay()->utc(), Carbon::parse($to, $corporateTimezone)->endOfDay()->utc()])->when($consolidatedIds->isNotEmpty(), fn($q) => $q->whereIn('employee_id', $consolidatedIds))->count();
+        return view('reports.index', compact('summaries', 'employeeRows', 'attendanceRows', 'attendanceMetrics', 'incidents', 'metrics', 'employees', 'departments', 'countries', 'corporateTimezone', 'from', 'to', 'tab', 'workStart', 'workEnd', 'lateGrace', 'earlyGrace', 'consolidatedApps', 'consolidatedDomains', 'consolidatedBuckets'));
     }
 
     public function exportReports(Request $request)
@@ -420,7 +480,8 @@ class DashboardController extends Controller
         $summaries = DB::table('daily_summaries')->where('company_id',$company)->whereBetween('summary_date',[$from,$to])
             ->when($employeeId !== 'All', fn($q) => $q->where('employee_id',$employeeId))
             ->when($departmentEmployeeIds !== null, fn($q) => $q->whereIn('employee_id', $departmentEmployeeIds))->get();
-        $events = DB::table('activity_events')->where('company_id',$company)->whereBetween('event_timestamp',[Carbon::parse($from, $corporateTimezone)->startOfDay()->utc(), Carbon::parse($to, $corporateTimezone)->endOfDay()->utc()])
+        $rawFrom = Carbon::parse($from, $corporateTimezone)->startOfDay()->utc()->max(Carbon::now('UTC')->subDays(30));
+        $events = DB::table('activity_events')->where('company_id',$company)->whereBetween('event_timestamp',[$rawFrom, Carbon::parse($to, $corporateTimezone)->endOfDay()->utc()])
             ->when($employeeId !== 'All', fn($q) => $q->where('employee_id',$employeeId))
             ->when($departmentEmployeeIds !== null, fn($q) => $q->whereIn('employee_id', $departmentEmployeeIds))->orderBy('event_timestamp')->get();
         $settings = DB::table('company_settings')->where('company_id',$company)->first();
@@ -515,6 +576,35 @@ class DashboardController extends Controller
         if (!empty($data['app_password'])) $values['app_password_hash'] = password_hash($data['app_password'], PASSWORD_BCRYPT);
         DB::table('company_settings')->where('company_id', config('worklive.company_id'))->update($values);
         return redirect()->route('settings')->with('success', 'Configuración guardada correctamente.');
+    }
+
+    public function aggregationStatus()
+    {
+        $run = DB::table('aggregation_runs')->where('company_id', config('worklive.company_id'))->latest('created_at')->first();
+        return response()->json(['ok' => true, 'run' => $run]);
+    }
+
+    public function startAggregation(Request $request, ActivityAggregationService $service)
+    {
+        $data = $request->validate([
+            'from' => ['required', 'date_format:Y-m-d'],
+            'to' => ['required', 'date_format:Y-m-d', 'after_or_equal:from'],
+            'cleanup' => ['nullable', 'boolean'],
+        ]);
+        $companyId = config('worklive.company_id');
+        $timezone = DB::table('company_settings')->where('company_id', $companyId)->value('timezone') ?: 'UTC';
+        $run = $service->start($companyId, Carbon::parse($data['from'], $timezone)->startOfDay()->utc(), Carbon::parse($data['to'], $timezone)->endOfDay()->utc(), (bool) ($data['cleanup'] ?? false), session('worklive_admin.email'));
+        return response()->json(['ok' => true, 'run' => $run]);
+    }
+
+    public function continueAggregation(string $id, ActivityAggregationService $service)
+    {
+        try {
+            $run = $service->process($id);
+            return response()->json(['ok' => true, 'run' => $run]);
+        } catch (\Throwable $exception) {
+            return response()->json(['ok' => false, 'error' => $exception->getMessage()], 422);
+        }
     }
 
     public function addAdmin(Request $request)

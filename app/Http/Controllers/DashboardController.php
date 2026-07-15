@@ -235,17 +235,37 @@ class DashboardController extends Controller
         $tab = (string) $request->query('tab', 'overview');
         if (!in_array($tab, ['overview', 'attendance', 'productivity', 'incidents'], true)) $tab = 'overview';
         $query = DB::table('daily_summaries')->where('company_id', $company)->whereBetween('summary_date', [$from, $to]);
-        if ($request->filled('employee_id') && $request->string('employee_id') !== 'All') $query->where('employee_id', $request->string('employee_id'));
-        if ($request->filled('department') && $request->string('department') !== 'All') $query->where('department', $request->string('department'));
-        if ($request->filled('country') && $request->string('country') !== 'All') $query->where('country', $request->string('country'));
+        $this->applyReportFilters($query, $request);
         $summaries = $query->orderByDesc('summary_date')->orderBy('employee_name')->get();
         $employeeRows = $summaries->groupBy('employee_id')->map(function ($items) {
             $first = $items->first(); $active = (int) $items->sum('total_active_seconds'); $idle = (int) $items->sum('total_idle_seconds'); $locked = (int) $items->sum('total_locked_seconds');
             return (object)['employee_id'=>$first->employee_id,'employee_name'=>$first->employee_name,'department'=>$first->department ?: '—','country'=>$first->country ?: '—','days'=>$items->count(),'active'=>$active,'idle'=>$idle,'locked'=>$locked,'productivity'=>$active + $idle > 0 ? (int) round(($active / ($active + $idle)) * 100) : 0,'first_activity'=>$items->pluck('first_activity')->filter()->min(),'last_activity'=>$items->pluck('last_activity')->filter()->max()];
         })->values();
+        $settings = DB::table('company_settings')->where('company_id', $company)->first();
+        $workStart = (string) ($settings?->business_hours_start ?? '09:00');
+        $workEnd = (string) ($settings?->business_hours_end ?? '18:00');
+        $lateGrace = (int) ($settings?->late_arrival_grace_minutes ?? 10);
+        $earlyGrace = (int) ($settings?->early_departure_grace_minutes ?? 10);
+        $toSeconds = fn (string $time) => ((int) substr($time, 0, 2) * 3600) + ((int) substr($time, 3, 2) * 60);
+        $startLimit = $toSeconds($workStart) + ($lateGrace * 60);
+        $endLimit = $toSeconds($workEnd) - ($earlyGrace * 60);
+        $attendanceRows = $summaries->groupBy('employee_id')->map(function ($items) use ($corporateTimezone, $startLimit, $endLimit) {
+            $first = $items->first(); $lateDays = 0; $earlyDays = 0; $punctualDays = 0; $firstCheckIn = null; $lastCheckOut = null;
+            foreach ($items as $item) {
+                $checkIn = $item->first_activity ? Carbon::parse($item->first_activity, 'UTC')->setTimezone($corporateTimezone) : null;
+                $checkOut = $item->last_activity ? Carbon::parse($item->last_activity, 'UTC')->setTimezone($corporateTimezone) : null;
+                if ($checkIn) { $seconds = ($checkIn->hour * 3600) + ($checkIn->minute * 60) + $checkIn->second; $seconds > $startLimit ? $lateDays++ : $punctualDays++; $firstCheckIn = !$firstCheckIn || $checkIn->lt($firstCheckIn) ? $checkIn : $firstCheckIn; }
+                if ($checkOut) { $seconds = ($checkOut->hour * 3600) + ($checkOut->minute * 60) + $checkOut->second; if ($seconds < $endLimit) $earlyDays++; $lastCheckOut = !$lastCheckOut || $checkOut->gt($lastCheckOut) ? $checkOut : $lastCheckOut; }
+            }
+            $days = $items->count();
+            return (object) ['employee_id'=>$first->employee_id,'employee_name'=>$first->employee_name,'department'=>$first->department ?: '—','days'=>$days,'punctual_days'=>$punctualDays,'late_days'=>$lateDays,'early_days'=>$earlyDays,'compliance'=>$days ? (int) round(($punctualDays / $days) * 100) : 0,'first_check_in'=>$firstCheckIn,'last_check_out'=>$lastCheckOut];
+        })->values();
         $selectedIds = $employeeRows->pluck('employee_id')->filter()->values();
+        $hasDimensionFilter = collect(['employee_id', 'department', 'country'])
+            ->contains(fn ($field) => ($value = trim((string) $request->query($field, 'All'))) !== '' && $value !== 'All');
         $incidentQuery = DB::table('activity_events')->where('company_id', $company)->whereBetween('event_timestamp', [Carbon::parse($from, $corporateTimezone)->startOfDay()->utc(), Carbon::parse($to, $corporateTimezone)->endOfDay()->utc()]);
         if ($selectedIds->isNotEmpty()) $incidentQuery->whereIn('employee_id', $selectedIds);
+        elseif ($hasDimensionFilter) $incidentQuery->whereRaw('1 = 0');
         $incidents = $incidentQuery->whereIn('event_type', ['locked', 'blocked', 'blocked-site'])->orderByDesc('event_timestamp')->limit(250)->get()
             ->each(fn ($event) => $event->display_timestamp = Carbon::parse($event->event_timestamp, 'UTC')->setTimezone($corporateTimezone));
         $metrics = (object)['employees'=>$employeeRows->count(),'active'=>(int)$summaries->sum('total_active_seconds'),'idle'=>(int)$summaries->sum('total_idle_seconds'),'locked'=>(int)$summaries->sum('total_locked_seconds'),'incidents'=>$incidents->count()];
@@ -254,7 +274,8 @@ class DashboardController extends Controller
         $employees = (clone $base)->select('employee_id','employee_name')->distinct()->orderBy('employee_name')->get();
         $departments = (clone $base)->whereNotNull('department')->distinct()->orderBy('department')->pluck('department');
         $countries = (clone $base)->whereNotNull('country')->distinct()->orderBy('country')->pluck('country');
-        return view('reports.index', compact('summaries', 'employeeRows', 'incidents', 'metrics', 'employees', 'departments', 'countries', 'corporateTimezone', 'from', 'to', 'tab'));
+        $attendanceMetrics = (object) ['punctual'=>$attendanceRows->sum('punctual_days'),'late'=>$attendanceRows->sum('late_days'),'early'=>$attendanceRows->sum('early_days'),'compliance'=>$attendanceRows->avg('compliance') ? (int) round($attendanceRows->avg('compliance')) : 0];
+        return view('reports.index', compact('summaries', 'employeeRows', 'attendanceRows', 'attendanceMetrics', 'incidents', 'metrics', 'employees', 'departments', 'countries', 'corporateTimezone', 'from', 'to', 'tab', 'workStart', 'workEnd', 'lateGrace', 'earlyGrace'));
     }
 
     public function exportReports(Request $request)
@@ -264,9 +285,7 @@ class DashboardController extends Controller
         $to = (string) $request->query('date_to', $request->query('filter_date', now($corporateTimezone)->toDateString()));
         if ($from > $to) [$from, $to] = [$to, $from];
         $query = DB::table('daily_summaries')->where('company_id', config('worklive.company_id'))->whereBetween('summary_date', [$from, $to]);
-        if ($request->filled('employee_id') && $request->string('employee_id') !== 'All') $query->where('employee_id', $request->string('employee_id'));
-        if ($request->filled('department') && $request->string('department') !== 'All') $query->where('department', $request->string('department'));
-        if ($request->filled('country') && $request->string('country') !== 'All') $query->where('country', $request->string('country'));
+        $this->applyReportFilters($query, $request);
         $summaries = $query->orderByDesc('summary_date')->orderBy('employee_name')->limit(10000)->get();
         return response()->streamDownload(function () use ($summaries, $corporateTimezone, $from, $to) { $out = fopen('php://output', 'w'); fputcsv($out, ['Periodo exportado','Zona horaria',$from.' a '.$to,$corporateTimezone]); fputcsv($out, []); fputcsv($out, ['Fecha','Empleado','Departamento','País','Horas Activo','Horas Inactivo','Horas Bloqueado','Primera Actividad','Última Actividad']); foreach ($summaries as $summary) fputcsv($out, [$summary->summary_date,$summary->employee_name,$summary->department,$summary->country,number_format($summary->total_active_seconds / 3600, 2),number_format($summary->total_idle_seconds / 3600, 2),number_format($summary->total_locked_seconds / 3600, 2),$summary->first_activity ? Carbon::parse($summary->first_activity, 'UTC')->setTimezone($corporateTimezone)->format('Y-m-d H:i:s') : '—',$summary->last_activity ? Carbon::parse($summary->last_activity, 'UTC')->setTimezone($corporateTimezone)->format('Y-m-d H:i:s') : '—']); fclose($out); }, 'worklive-reporte-'.$from.'_'.$to.'.csv');
     }
@@ -309,10 +328,16 @@ class DashboardController extends Controller
         $to = (string) $request->query('date_to', $request->query('filter_date', now($corporateTimezone)->toDateString()));
         if ($from > $to) [$from, $to] = [$to, $from];
         $query = DB::table('daily_summaries')->where('company_id', config('worklive.company_id'))->whereBetween('summary_date', [$from, $to]);
-        if ($request->filled('employee_id') && $request->string('employee_id') !== 'All') $query->where('employee_id', $request->string('employee_id'));
-        if ($request->filled('department') && $request->string('department') !== 'All') $query->where('department', $request->string('department'));
-        if ($request->filled('country') && $request->string('country') !== 'All') $query->where('country', $request->string('country'));
+        $this->applyReportFilters($query, $request);
         return [$query->orderByDesc('summary_date')->orderBy('employee_name')->limit(10000)->get(), $from, $to, $corporateTimezone];
+    }
+
+    private function applyReportFilters($query, Request $request): void
+    {
+        foreach (['employee_id', 'department', 'country'] as $field) {
+            $value = trim((string) $request->query($field, 'All'));
+            if ($value !== '' && $value !== 'All') $query->where($field, $value);
+        }
     }
 
     public function policies()

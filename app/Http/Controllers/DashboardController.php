@@ -73,7 +73,38 @@ class DashboardController extends Controller
             ->each(fn ($event) => $event->display_timestamp = Carbon::parse($event->event_timestamp, 'UTC')->setTimezone($corporateTimezone));
         $hourly = collect(range(8, 18))->map(fn ($hour) => ['label' => sprintf('%02d:00', $hour), 'value' => $hourlySeconds[$hour], 'sync' => 0]);
 
-        return view('dashboard.index', compact('employees', 'events', 'stats', 'hourly', 'employeeTimes', 'corporateTimezone'));
+        // Rankings del tablero: agregaciones SQL acotadas al periodo visible,
+        // sin cargar todos los eventos en memoria.
+        $dashboardNow = Carbon::now($corporateTimezone);
+        $todayFrom = $dashboardNow->copy()->startOfDay()->utc();
+        $todayTo = $dashboardNow->copy()->endOfDay()->utc();
+        $weekFrom = $dashboardNow->copy()->startOfWeek(Carbon::MONDAY)->startOfDay()->utc();
+        $weekTo = $dashboardNow->copy()->endOfDay()->utc();
+        $topApps = DB::table('activity_events')->where('company_id', $company)->whereBetween('event_timestamp', [$weekFrom, $weekTo])->where('event_type', 'active')
+            ->select('app')->selectRaw('SUM(duration) AS seconds, COUNT(*) AS events')->groupBy('app')->orderByDesc('seconds')->limit(32)->get()
+            ->groupBy(fn ($row) => trim((string) $row->app) ?: 'Sin aplicación')
+            ->map(fn ($rows, $label) => (object) ['label' => $label, 'seconds' => $rows->sum('seconds'), 'events' => $rows->sum('events')])
+            ->sortByDesc('seconds')->take(8)->values();
+        $topDomains = DB::table('activity_events')->where('company_id', $company)->whereBetween('event_timestamp', [$weekFrom, $weekTo])->where('event_type', 'active')
+            ->select('domain')->selectRaw('SUM(duration) AS seconds, COUNT(*) AS events')->groupBy('domain')->orderByDesc('seconds')->limit(32)->get()
+            ->groupBy(fn ($row) => trim((string) $row->domain) ?: 'Sin dominio')
+            ->map(fn ($rows, $label) => (object) ['label' => $label, 'seconds' => $rows->sum('seconds'), 'events' => $rows->sum('events')])
+            ->sortByDesc('seconds')->take(8)->values();
+        $employeeDirectory = $employees->keyBy('id');
+        $idleRanking = function ($from, $to) use ($company, $employeeDirectory) {
+            return DB::table('activity_events')->where('company_id', $company)->whereBetween('event_timestamp', [$from, $to])->where('event_type', 'idle')
+                ->select('employee_id')->selectRaw('SUM(duration) AS seconds, COUNT(*) AS events')->groupBy('employee_id')->orderByDesc('seconds')->limit(8)->get()
+                ->map(function ($row) use ($employeeDirectory) {
+                    $employee = $employeeDirectory->get($row->employee_id);
+                    $row->employee_name = $employee?->name ?: 'Empleado no identificado';
+                    $row->department = $employee?->department ?: '—';
+                    return $row;
+                });
+        };
+        $idleTodayLeaders = $idleRanking($todayFrom, $todayTo);
+        $idleWeekLeaders = $idleRanking($weekFrom, $weekTo);
+
+        return view('dashboard.index', compact('employees', 'events', 'stats', 'hourly', 'employeeTimes', 'corporateTimezone', 'topApps', 'topDomains', 'idleTodayLeaders', 'idleWeekLeaders'));
     }
 
     public function employees(Request $request)

@@ -7,7 +7,9 @@ use App\Models\Agent;
 use App\Models\Device;
 use App\Models\Employee;
 use Illuminate\Http\Request;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Str;
 
 class WorkLiveController extends Controller
@@ -96,9 +98,18 @@ class WorkLiveController extends Controller
         $key = Str::upper(trim($data['clientKey']));
         $employee = Employee::where('company_id', config('worklive.company_id'))->where('client_key', $key)->first();
         if (!$employee) return response()->json(['ok' => false, 'error' => 'No employee found for this clientKey'], 404);
-        $token = Str::random(64);
-        $device = $this->upsertDevice($employee, $data['device'] ?? []);
-        $agent = Agent::create(['id' => 'agent-'.Str::lower(Str::random(20)), 'company_id' => config('worklive.company_id'), 'employee_id' => $employee->id, 'token_hash' => hash('sha256', $token), 'device_id' => $device->id, 'last_seen_at' => now()]);
+        try {
+            $token = Str::random(64);
+            [$device, $agent] = DB::transaction(function () use ($employee, $data, $token) {
+                $device = $this->upsertDevice($employee, $data['device'] ?? []);
+                $agent = Agent::create(['id' => 'agent-'.Str::lower(Str::random(20)), 'company_id' => config('worklive.company_id'), 'employee_id' => $employee->id, 'token_hash' => hash('sha256', $token), 'device_id' => $device->id, 'last_seen_at' => now()]);
+                return [$device, $agent];
+            });
+        } catch (QueryException $exception) {
+            Log::error('No se pudo activar el agente WorkLive.', ['employee_id' => $employee->id, 'sql_state' => $exception->getCode(), 'message' => $exception->getMessage()]);
+            return response()->json(['ok' => false, 'error' => 'El servidor no pudo guardar la activación. Verifica la conexión MySQL y ejecuta las migraciones pendientes.'], 503);
+        }
+
         return response()->json(['ok' => true, 'agentId' => $agent->id, 'companyId' => config('worklive.company_id'), 'employeeId' => $employee->id, 'employeeName' => $employee->name, 'pollIntervalSeconds' => 60, 'apiToken' => $token]);
     }
 
@@ -225,7 +236,10 @@ class WorkLiveController extends Controller
             'employee_id' => $employee->id,
             'hostname' => $pick($hostname, $current->hostname),
             'os' => $pick($value(['os']), $current->os),
-            'ip' => $pick($value(['ip']), $current->ip),
+            // Algunos equipos/redes no exponen una IP local al agente. La
+            // tabla heredada la define como NOT NULL, por lo que se conserva
+            // un valor explícito y visible en vez de abortar la vinculación.
+            'ip' => $pick($value(['ip']), $current->ip ?: 'No reportada'),
             'version' => $pick($value(['version']), $current->version),
             'serial_number' => $pick($serial, $current->serial_number),
             'brand' => $pick($value(['brand']), $current->brand),

@@ -19,5 +19,8 @@ return Application::configure(basePath: dirname(__DIR__))
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions): void {
-        //
+        // El Tracker Windows no siempre envía Accept: application/json. Para
+        // conservar su contrato, cualquier fallo de /api debe responder JSON
+        // en vez de la página HTML de excepción de Laravel.
+        $exceptions->shouldRenderJsonWhen(fn (\Illuminate\Http\Request $request, \Throwable $exception) => $request->is('api/*') || $request->expectsJson());
     })->create();

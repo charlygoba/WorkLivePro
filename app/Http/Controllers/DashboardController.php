@@ -263,6 +263,7 @@ class DashboardController extends Controller
         $bucketSortColumn = match ($bucketSort) {
             'application' => 'app',
             'domain' => 'domain',
+            'activity' => 'activity_title',
             'status' => 'event_type',
             'events' => 'event_count',
             'duration' => DB::raw('(active_seconds + idle_seconds)'),
@@ -275,9 +276,7 @@ class DashboardController extends Controller
 
     public function updateDevice(Request $request, string $employeeId, string $deviceId)
     {
-        $data = $request->validate(['brand'=>['nullable','string','max:120'],'model'=>['nullable','string','max:120'],'processor'=>['nullable','string','max:255'],'ram'=>['nullable','string','max:120'],'storage'=>['nullable','string','max:120'],'serial_number'=>['nullable','string','max:255'],'os'=>['required','string','max:255']]);
-        DB::table('devices')->where('company_id',config('worklive.company_id'))->where('employee_id',$employeeId)->where('id',$deviceId)->update($data+['last_sync'=>now()]);
-        return redirect()->to(route('employees.show',$employeeId).'?tab=device')->with('success','Dispositivo actualizado correctamente.');
+        abort(403, 'La información del dispositivo es reportada directamente por el Agente Cliente y actualmente es de solo lectura.');
     }
 
     public function reports(Request $request)

@@ -413,9 +413,16 @@ class DashboardController extends Controller
         $from = $request->query('date_from', now($corporateTimezone)->toDateString());
         $to = $request->query('date_to', now($corporateTimezone)->toDateString());
         $employeeId = $request->query('employee_id', 'All');
+        $department = $request->query('department', 'All');
         $employees = DB::table('employees')->where('company_id',$company)->orderBy('name')->get(['id','name','department']);
-        $summaries = DB::table('daily_summaries')->where('company_id',$company)->whereBetween('summary_date',[$from,$to])->when($employeeId !== 'All', fn($q) => $q->where('employee_id',$employeeId))->get();
-        $events = DB::table('activity_events')->where('company_id',$company)->whereBetween('event_timestamp',[Carbon::parse($from, $corporateTimezone)->startOfDay()->utc(), Carbon::parse($to, $corporateTimezone)->endOfDay()->utc()])->when($employeeId !== 'All', fn($q) => $q->where('employee_id',$employeeId))->orderBy('event_timestamp')->get();
+        $departments = $employees->pluck('department')->filter()->unique()->sort()->values();
+        $departmentEmployeeIds = $department === 'All' ? null : $employees->where('department', $department)->pluck('id')->values();
+        $summaries = DB::table('daily_summaries')->where('company_id',$company)->whereBetween('summary_date',[$from,$to])
+            ->when($employeeId !== 'All', fn($q) => $q->where('employee_id',$employeeId))
+            ->when($departmentEmployeeIds !== null, fn($q) => $q->whereIn('employee_id', $departmentEmployeeIds))->get();
+        $events = DB::table('activity_events')->where('company_id',$company)->whereBetween('event_timestamp',[Carbon::parse($from, $corporateTimezone)->startOfDay()->utc(), Carbon::parse($to, $corporateTimezone)->endOfDay()->utc()])
+            ->when($employeeId !== 'All', fn($q) => $q->where('employee_id',$employeeId))
+            ->when($departmentEmployeeIds !== null, fn($q) => $q->whereIn('employee_id', $departmentEmployeeIds))->orderBy('event_timestamp')->get();
         $settings = DB::table('company_settings')->where('company_id',$company)->first();
         $summaryMap = $summaries->keyBy(fn($s) => $s->employee_id.'__'.$s->summary_date);
         $eventGroups = $events->groupBy(fn($e) => $e->employee_id.'__'.Carbon::parse($e->event_timestamp, 'UTC')->setTimezone($corporateTimezone)->toDateString());
@@ -427,7 +434,7 @@ class DashboardController extends Controller
             $late = self::minutesLate($startDisplay?->format('Y-m-d H:i:s'),$date,$settings?->business_hours_start ?: '08:00',(int)($settings?->late_arrival_grace_minutes ?? 10)); $early = self::minutesEarly($endDisplay?->format('Y-m-d H:i:s'),$date,$settings?->business_hours_end ?: '18:00',(int)($settings?->early_departure_grace_minutes ?? 10));
             return (object)['employee_id'=>$id,'date'=>$date,'employee_name'=>$summary?->employee_name ?: $employee?->name ?: $id,'department'=>$summary?->department ?: $employee?->department ?: '—','startup'=>$start,'shutdown'=>$end,'startup_display'=>$startDisplay,'shutdown_display'=>$endDisplay,'startup_source'=>$startup ? 'startup' : ($first ? 'activity' : 'none'),'shutdown_source'=>$shutdown ? 'shutdown' : ($last ? 'activity' : 'none'),'active_seconds'=>$summary?->total_active_seconds ?: $ordered->where('event_type','active')->sum('duration'),'idle_seconds'=>$summary?->total_idle_seconds ?: $ordered->where('event_type','idle')->sum('duration'),'locked_seconds'=>$summary?->total_locked_seconds ?: $ordered->where('event_type','locked')->sum('duration'),'blocked_attempts'=>$ordered->filter(fn($e)=>str_contains(strtolower(($e->event_type.' '.$e->app.' '.$e->title.' '.$e->domain)), 'block'))->count(),'late_minutes'=>$late,'early_minutes'=>$early];
         })->sortByDesc(fn($r)=>$r->date)->values();
-        return view('time-clock.index', compact('rows','employees','from','to','employeeId','settings','corporateTimezone'));
+        return view('time-clock.index', compact('rows','employees','departments','department','from','to','employeeId','settings','corporateTimezone'));
     }
 
     private static function minutesLate(?string $value, string $date, string $time, int $grace): int { if (!$value) return 0; $threshold=strtotime($date.' '.$time.' +'.$grace.' minutes'); return max(0,(int)ceil((strtotime($value)-$threshold)/60)); }

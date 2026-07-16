@@ -229,23 +229,35 @@ class DashboardController extends Controller
         $nowForEmployee = Carbon::now($timezone);
         $todayStart = $nowForEmployee->copy()->startOfDay();
         $weekStart = $nowForEmployee->copy()->startOfWeek(Carbon::MONDAY);
-        $periodSummaries = DB::table('daily_summaries')->where('company_id', $company)->where('employee_id', $id)->whereBetween('summary_date', [$weekStart->toDateString(), $nowForEmployee->toDateString()])->get();
-        if ($periodSummaries->isNotEmpty()) {
-            $todaySummary = $periodSummaries->where('summary_date', $nowForEmployee->toDateString());
-            $timeMetrics = [
-                'todayActive' => (int) $todaySummary->sum('total_active_seconds'),
-                'todayIdle' => (int) $todaySummary->sum('total_idle_seconds'),
-                'weekActive' => (int) $periodSummaries->sum('total_active_seconds'),
-                'weekIdle' => (int) $periodSummaries->sum('total_idle_seconds'),
-            ];
-        } else {
-            $periodEvents = DB::table('activity_events')->where('company_id', $company)->where('employee_id', $id)->where('event_timestamp', '>=', Carbon::now('UTC')->subDays(30))->whereBetween('event_timestamp', [$weekStart->copy()->utc(), $nowForEmployee->copy()->utc()])->get(['event_timestamp', 'event_type', 'duration']);
-            $inToday = fn ($event) => Carbon::parse($event->event_timestamp, 'UTC')->setTimezone($timezone)->greaterThanOrEqualTo($todayStart);
-            $sumTime = fn ($type, $onlyToday = false) => (int) $periodEvents->filter(fn ($event) => $event->event_type === $type && (!$onlyToday || $inToday($event)))->sum('duration');
-            $timeMetrics = [
-                'todayActive' => $sumTime('active', true), 'todayIdle' => $sumTime('idle', true), 'weekActive' => $sumTime('active'), 'weekIdle' => $sumTime('idle'),
-            ];
-        }
+        // El día vigente nunca depende de la consolidación: ésta se ejecuta por
+        // lotes y puede ir retrasada. Los indicadores de hoy siempre suman la
+        // señal cruda que acaba de enviar el agente, en la zona del colaborador.
+        $todayEvents = DB::table('activity_events')
+            ->where('company_id', $company)
+            ->where('employee_id', $id)
+            ->whereBetween('event_timestamp', [$todayStart->copy()->utc(), $nowForEmployee->copy()->utc()])
+            ->selectRaw("COALESCE(SUM(CASE WHEN event_type = 'active' THEN duration ELSE 0 END), 0) AS active_seconds")
+            ->selectRaw("COALESCE(SUM(CASE WHEN event_type = 'idle' THEN duration ELSE 0 END), 0) AS idle_seconds")
+            ->first();
+
+        // Para la semana se conservan los resúmenes de los días ya cerrados y
+        // se agrega el día actual desde activity_events. De este modo no se
+        // duplica hoy ni se muestra 0 cuando el resumen aún no se ha procesado.
+        $closedWeekEnd = $todayStart->copy()->subDay()->toDateString();
+        $closedWeek = $closedWeekEnd < $weekStart->toDateString()
+            ? collect()
+            : DB::table('daily_summaries')
+                ->where('company_id', $company)
+                ->where('employee_id', $id)
+                ->whereBetween('summary_date', [$weekStart->toDateString(), $closedWeekEnd])
+                ->get();
+
+        $timeMetrics = [
+            'todayActive' => (int) ($todayEvents->active_seconds ?? 0),
+            'todayIdle' => (int) ($todayEvents->idle_seconds ?? 0),
+            'weekActive' => (int) $closedWeek->sum('total_active_seconds') + (int) ($todayEvents->active_seconds ?? 0),
+            'weekIdle' => (int) $closedWeek->sum('total_idle_seconds') + (int) ($todayEvents->idle_seconds ?? 0),
+        ];
         $timeMetrics += [
             'weekStart' => $weekStart->format('d/m'),
             'today' => $nowForEmployee->format('d/m/Y'),

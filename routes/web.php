@@ -20,6 +20,7 @@ Route::middleware('worklive.web')->group(function () {
     Route::delete('/employees/{id}', [DashboardController::class, 'deleteWebEmployee'])->name('employees.delete');
     Route::put('/employees/{employeeId}/devices/{deviceId}', [DashboardController::class, 'updateDevice'])->name('employees.devices.update');
     Route::get('/reports', [DashboardController::class, 'reports'])->name('reports');
+    Route::get('/reports/devices', [DashboardController::class, 'devices'])->name('reports.devices');
     Route::get('/reports/export', [DashboardController::class, 'exportReports'])->name('reports.export');
     Route::get('/reports/export/xlsx', [DashboardController::class, 'exportReportsXlsx'])->name('reports.export.xlsx');
     Route::get('/reports/export/pdf', [DashboardController::class, 'exportReportsPdf'])->name('reports.export.pdf');

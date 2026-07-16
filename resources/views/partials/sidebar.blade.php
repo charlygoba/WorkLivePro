@@ -19,7 +19,8 @@
 
         @php($reportsActive = request()->routeIs('reports*', 'time-clock*'))
         <div class="space-y-1 rounded-lg {{ $reportsActive ? 'bg-slate-800/45 py-1.5' : '' }}">
-            <a href="{{ route('reports') }}" class="flex w-full items-center space-x-3 rounded-md px-3 py-2 text-sm font-medium transition-all {{ request()->routeIs('reports*') ? 'bg-indigo-600 text-white shadow' : 'text-slate-300 hover:bg-slate-800 hover:text-white' }}"><i class="fa-solid fa-chart-column w-4 text-center text-sm" aria-hidden="true"></i><span>{{ $menu['reports'] }}</span></a>
+            <a href="{{ route('reports') }}" class="flex w-full items-center space-x-3 rounded-md px-3 py-2 text-sm font-medium transition-all {{ request()->routeIs('reports') ? 'bg-indigo-600 text-white shadow' : 'text-slate-300 hover:bg-slate-800 hover:text-white' }}"><i class="fa-solid fa-chart-column w-4 text-center text-sm" aria-hidden="true"></i><span>{{ $menu['reports'] }}</span></a>
+            <a href="{{ route('reports.devices') }}" class="ml-5 flex items-center gap-2 rounded-md px-3 py-1.5 text-xs font-medium transition {{ request()->routeIs('reports.devices') ? 'bg-indigo-500/25 text-indigo-200' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200' }}"><i class="fa-solid fa-laptop w-3 text-center" aria-hidden="true"></i><span>Dispositivos</span></a>
             <a href="{{ route('time-clock') }}" class="ml-5 flex items-center gap-2 rounded-md px-3 py-1.5 text-xs font-medium transition {{ request()->routeIs('time-clock*') ? 'bg-indigo-500/25 text-indigo-200' : 'text-slate-400 hover:bg-slate-800 hover:text-slate-200' }}"><i class="fa-solid fa-user-clock w-3 text-center" aria-hidden="true"></i><span>{{ $menu['time_clock'] }}</span></a>
         </div>
 

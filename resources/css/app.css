@@ -142,3 +142,15 @@ html,body{min-height:100%;background:color-mix(in oklab,var(--color-slate-100) 4
 
 /* El drawer pertenece al partial compartido; nunca depende del contenedor de una vista. */
 @media(max-width:1180px){.worklive-sidebar{height:100dvh!important;overscroll-behavior:contain}.worklive-navigation-overlay{touch-action:none}}
+
+/* La ficha de dispositivos comparte dimensiones y ritmo visual con el modal de colaboradores. */
+.device-detail-dialog{width:min(100%,42rem)}
+.device-modal-body{padding:1.4rem 1.5rem 1.5rem}
+.device-modal-record{padding:0}
+.device-detail-dialog .device-spec-grid{grid-template-columns:repeat(2,minmax(0,1fr))!important}
+.device-modal-record .device-spec-card{padding:.9rem}
+.device-modal-record .device-runtime{margin-top:.9rem}
+.device-detail-actions{grid-template-columns:1fr;justify-content:stretch}
+.device-detail-actions button{border-color:#0f172a;background:#0f172a;color:#fff}
+.device-detail-actions button:hover{background:#334155}
+@media(max-width:600px){.device-modal-body{padding:1rem}.device-modal-record .device-spec-grid{grid-template-columns:1fr}}

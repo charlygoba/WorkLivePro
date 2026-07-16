@@ -368,6 +368,54 @@ class DashboardController extends Controller
         return view('reports.index', compact('summaries', 'employeeRows', 'attendanceRows', 'attendanceMetrics', 'incidents', 'metrics', 'employees', 'departments', 'countries', 'corporateTimezone', 'from', 'to', 'tab', 'workStart', 'workEnd', 'lateGrace', 'earlyGrace', 'consolidatedApps', 'consolidatedDomains', 'consolidatedBuckets'));
     }
 
+    public function devices(Request $request)
+    {
+        $company = config('worklive.company_id');
+        $corporateTimezone = $this->corporateTimezone();
+        $search = trim((string) $request->input('search', ''));
+        $employeeId = trim((string) $request->input('employee_id', 'All'));
+        $platform = trim((string) $request->input('platform', 'All'));
+
+        $query = DB::table('devices')
+            ->leftJoin('employees', function ($join) use ($company) {
+                $join->on('employees.id', '=', 'devices.employee_id')
+                    ->where('employees.company_id', '=', $company);
+            })
+            ->where('devices.company_id', $company)
+            ->select('devices.*', 'employees.name as employee_name', 'employees.department as employee_department', 'employees.country as employee_country');
+
+        if ($search !== '') {
+            $term = '%'.$search.'%';
+            $query->where(fn ($builder) => $builder
+                ->where('devices.hostname', 'like', $term)
+                ->orWhere('devices.serial_number', 'like', $term)
+                ->orWhere('devices.brand', 'like', $term)
+                ->orWhere('devices.model', 'like', $term)
+                ->orWhere('employees.name', 'like', $term));
+        }
+        if ($employeeId !== '' && $employeeId !== 'All') {
+            $query->where('devices.employee_id', $employeeId);
+        }
+        if ($platform !== '' && $platform !== 'All') {
+            $query->where('devices.os', 'like', '%'.$platform.'%');
+        }
+
+        $devices = $query->orderByDesc('devices.last_sync')->orderBy('devices.hostname')->get()->each(function ($device) use ($corporateTimezone) {
+            $device->last_sync_display = $device->last_sync
+                ? Carbon::parse($device->last_sync, 'UTC')->setTimezone($corporateTimezone)
+                : null;
+            $minutesSinceSync = $device->last_sync_display?->diffInMinutes(Carbon::now($corporateTimezone));
+            $device->sync_status = $minutesSinceSync === null ? 'pending' : ($minutesSinceSync <= 5 ? 'live' : 'stale');
+        });
+
+        $employees = DB::table('employees')->where('company_id', $company)->orderBy('name')->get(['id', 'name']);
+        $platforms = DB::table('devices')->where('company_id', $company)->whereNotNull('os')->where('os', '!=', '')->distinct()->orderBy('os')->pluck('os');
+        $liveCount = $devices->where('sync_status', 'live')->count();
+        $unassignedCount = $devices->filter(fn ($device) => empty($device->employee_name))->count();
+
+        return view('reports.devices', compact('devices', 'employees', 'platforms', 'corporateTimezone', 'liveCount', 'unassignedCount'));
+    }
+
     public function exportReports(Request $request)
     {
         $corporateTimezone = $this->corporateTimezone();

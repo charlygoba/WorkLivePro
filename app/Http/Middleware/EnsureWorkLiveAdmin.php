@@ -11,6 +11,9 @@ class EnsureWorkLiveAdmin
     public function handle(Request $request, Closure $next): Response
     {
         if (!$request->session()->has('worklive_admin')) return redirect()->route('login');
-        return $next($request);
+        $response = $next($request);
+        $response->headers->set('X-Robots-Tag', 'noindex, nofollow, noarchive, nosnippet, noimageindex');
+
+        return $response;
     }
 }

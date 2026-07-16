@@ -113,6 +113,15 @@ class DashboardController extends Controller
         $search = trim((string) $request->input('search', ''));
         $department = trim((string) $request->input('department', 'All'));
         $status = trim((string) $request->input('status', 'All'));
+        $sort = (string) $request->input('sort', 'name');
+        $direction = $request->input('direction') === 'desc' ? 'desc' : 'asc';
+        $sortColumns = [
+            'name' => 'name', 'department' => 'department', 'country' => 'country',
+            'status' => 'status', 'app' => 'current_app', 'domain' => 'current_domain',
+            'last_active' => 'last_active', 'time_today' => 'active_time_today',
+        ];
+        $sortColumn = $sortColumns[$sort] ?? $sortColumns['name'];
+        if (! array_key_exists($sort, $sortColumns)) $sort = 'name';
 
         if ($search !== '') {
             $term = '%'.$search.'%';
@@ -121,14 +130,14 @@ class DashboardController extends Controller
         if ($department !== '' && $department !== 'All') $query->where('department', $department);
         if ($status !== '' && $status !== 'All') $query->where('status', $status);
         $corporateTimezone = $this->corporateTimezone();
-        $employees = $query->orderBy('name')->get()->each(function ($employee) use ($corporateTimezone) {
+        $employees = $query->orderBy($sortColumn, $direction)->orderBy('name')->get()->each(function ($employee) use ($corporateTimezone) {
             $employee->last_active_display = $employee->last_active
                 ? Carbon::parse($employee->last_active, 'UTC')->setTimezone($corporateTimezone)
                 : null;
         });
         $departments = DB::table('employees')->where('company_id', config('worklive.company_id'))->whereNotNull('department')->distinct()->orderBy('department')->pluck('department');
         $clientKeyPrefix = DB::table('company_settings')->where('company_id', config('worklive.company_id'))->value('client_key_prefix') ?: 'SAFEB';
-        return view('employees.index', compact('employees','departments','clientKeyPrefix','corporateTimezone'));
+        return view('employees.index', compact('employees','departments','clientKeyPrefix','corporateTimezone','sort','direction'));
     }
 
     public function storeEmployee(Request $request)

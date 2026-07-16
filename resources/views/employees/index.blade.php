@@ -19,6 +19,11 @@
     $isAdmin = filled(session('worklive_admin.email'));
     $availableCount = $employees->whereIn('status', ['active', 'online'])->count();
     $offlineCount = $employees->where('status', 'offline')->count();
+    $sortLink = function (string $key) use ($sort, $direction) {
+        $nextDirection = $sort === $key && $direction === 'asc' ? 'desc' : 'asc';
+        return route('employees', array_merge(request()->query(), ['sort' => $key, 'direction' => $nextDirection]));
+    };
+    $sortIcon = fn (string $key) => $sort !== $key ? 'fa-solid fa-sort text-slate-300' : ($direction === 'asc' ? 'fa-solid fa-sort-up text-indigo-500' : 'fa-solid fa-sort-down text-indigo-500');
 @endphp
 
 <div class="flex min-h-screen overflow-hidden bg-slate-100/45 font-sans text-slate-800">
@@ -46,7 +51,7 @@
                 <div class="flex items-center justify-between border-b border-slate-100 bg-gradient-to-r from-white to-indigo-50/40 px-5 py-4"><div><p class="text-sm font-black text-slate-900"><i class="fa-solid fa-list-check mr-2 text-indigo-500" aria-hidden="true"></i>{{ $employees->count() }} colaboradores mostrados</p><p class="mt-0.5 text-[11px] text-slate-400">Actividad, estado y vínculo del agente por persona.</p></div><p class="hidden rounded-full bg-white px-3 py-1 font-mono text-[10px] text-slate-500 shadow-sm md:block"><i class="fa-regular fa-clock mr-1 text-indigo-500" aria-hidden="true"></i>Zona corporativa</p></div>
                 <div class="overflow-x-auto">
                     <table class="w-full min-w-[1380px] text-left text-[11px]">
-                        <thead class="border-b border-slate-100 bg-slate-50/70 font-mono text-[10px] font-bold uppercase tracking-wider text-slate-400"><tr><th class="px-5 py-3.5">Empleado</th><th class="px-4 py-3.5">Departamento</th><th class="px-4 py-3.5">País y zona</th><th class="px-4 py-3.5">Estado</th><th class="px-4 py-3.5">Aplicación foco</th><th class="px-4 py-3.5">Dominio activo</th><th class="px-4 py-3.5">Última actividad</th><th class="px-4 py-3.5 text-right">Tiempos hoy</th><th class="px-5 py-3.5 text-center">Acciones</th></tr></thead>
+                        <thead class="border-b border-slate-100 bg-slate-50/70 font-mono text-[10px] font-bold uppercase tracking-wider text-slate-400"><tr>@foreach(['name'=>'Empleado','department'=>'Departamento','country'=>'País y zona','status'=>'Estado','app'=>'Aplicación foco','domain'=>'Dominio activo','last_active'=>'Última actividad'] as $key => $label)<th class="px-4 py-3.5 first:px-5"><a href="{{ $sortLink($key) }}" class="inline-flex items-center gap-1.5 transition hover:text-indigo-600">{{ $label }}<i class="{{ $sortIcon($key) }}" aria-hidden="true"></i></a></th>@endforeach<th class="px-4 py-3.5 text-right"><a href="{{ $sortLink('time_today') }}" class="inline-flex items-center gap-1.5 transition hover:text-indigo-600">Tiempos hoy<i class="{{ $sortIcon('time_today') }}" aria-hidden="true"></i></a></th><th class="px-5 py-3.5 text-center">Acciones</th></tr></thead>
                         <tbody class="divide-y divide-slate-100">
                             @forelse($employees as $employee)
                                 <tr class="transition hover:bg-indigo-50/30">

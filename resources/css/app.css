@@ -143,6 +143,13 @@ html,body{min-height:100%;background:color-mix(in oklab,var(--color-slate-100) 4
 /* El drawer pertenece al partial compartido; nunca depende del contenedor de una vista. */
 @media(max-width:1180px){.worklive-sidebar{height:100dvh!important;overscroll-behavior:contain}.worklive-navigation-overlay{touch-action:none}}
 
+/* Drawer global: al ocultar el menú no se conserva la columna lateral en las vistas .shell. */
+@media(max-width:1180px){
+  .shell{display:block!important;min-width:0!important}
+  .shell>.worklive-sidebar{position:fixed!important;top:0;right:auto;bottom:0;left:0}
+  .shell>.main{width:100%!important;min-width:0!important;margin-left:0!important}
+}
+
 /* La ficha de dispositivos comparte dimensiones y ritmo visual con el modal de colaboradores. */
 .device-detail-dialog{width:min(100%,42rem)}
 .device-modal-body{padding:1.4rem 1.5rem 1.5rem}

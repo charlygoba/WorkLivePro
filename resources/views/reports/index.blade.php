@@ -69,10 +69,64 @@
 
             <section class="overflow-hidden rounded-2xl border border-slate-100 bg-white shadow-sm">
                 @if($tab === 'consolidated')
-                    <div class="reports-view-heading"><div><h3><i class="fa-solid fa-layer-group" aria-hidden="true"></i> Actividad consolidada</h3><p>Consulta histórica optimizada desde resúmenes diarios y bloques de 5 minutos. No carga eventos crudos.</p></div><div class="reports-view-summary"><span>Bloques de 5 min <b>{{ number_format($consolidatedBuckets) }}</b></span><span>Aplicaciones <b>{{ $consolidatedApps->count() }}</b></span><span>Dominios <b>{{ $consolidatedDomains->count() }}</b></span></div></div>
-                    <div class="grid grid-cols-1 gap-6 p-5 xl:grid-cols-2">
-                        <section class="rounded-xl border border-slate-100 bg-slate-50/60 p-5"><div class="mb-4 flex items-center justify-between"><div><h4 class="text-xs font-bold text-slate-900">Aplicaciones con mayor foco</h4><p class="mt-1 text-[10px] text-slate-500">Tiempo activo e inactivo acumulado.</p></div><i class="fa-solid fa-window-maximize text-indigo-500" aria-hidden="true"></i></div><div class="space-y-3">@forelse($consolidatedApps as $item)<div><div class="mb-1 flex justify-between gap-3 text-xs"><span class="font-semibold text-slate-700">{{ $item->app }}</span><span class="font-mono text-indigo-600">{{ $fmt($item->seconds) }}</span></div><div class="h-2 overflow-hidden rounded-full bg-slate-200"><div class="h-full rounded-full bg-indigo-500" style="width: {{ $consolidatedApps->first()->seconds > 0 ? min(100, ($item->seconds / $consolidatedApps->first()->seconds) * 100) : 0 }}%"></div></div></div>@empty<p class="py-8 text-center text-xs text-slate-400">Aún no hay resúmenes de aplicaciones para este periodo.</p>@endforelse</div></section>
-                        <section class="rounded-xl border border-slate-100 bg-slate-50/60 p-5"><div class="mb-4 flex items-center justify-between"><div><h4 class="text-xs font-bold text-slate-900">Dominios visitados</h4><p class="mt-1 text-[10px] text-slate-500">Distribución histórica por dominio.</p></div><i class="fa-solid fa-globe text-cyan-500" aria-hidden="true"></i></div><div class="space-y-3">@forelse($consolidatedDomains as $item)<div><div class="mb-1 flex justify-between gap-3 text-xs"><span class="font-semibold text-slate-700">{{ $item->domain }}</span><span class="font-mono text-cyan-600">{{ $fmt($item->seconds) }}</span></div><div class="h-2 overflow-hidden rounded-full bg-slate-200"><div class="h-full rounded-full bg-cyan-500" style="width: {{ $consolidatedDomains->first()->seconds > 0 ? min(100, ($item->seconds / $consolidatedDomains->first()->seconds) * 100) : 0 }}%"></div></div></div>@empty<p class="py-8 text-center text-xs text-slate-400">Aún no hay resúmenes de dominios para este periodo.</p>@endforelse</div></section>
+                    @php
+                        $consolidatedIcon = function ($name, bool $domain = false): array {
+                            $value = strtolower((string) $name);
+                            if ($domain) return match (true) {
+                                str_contains($value, 'github') => ['fa-brands fa-github', 'insight-icon-github'],
+                                str_contains($value, 'facebook') => ['fa-brands fa-facebook-f', 'insight-icon-facebook'],
+                                str_contains($value, 'instagram') => ['fa-brands fa-instagram', 'insight-icon-instagram'],
+                                str_contains($value, 'hubspot') => ['fa-brands fa-hubspot', 'insight-icon-hubspot'],
+                                str_contains($value, 'google') || str_contains($value, 'gmail') => ['fa-brands fa-google', 'insight-icon-openai'],
+                                str_contains($value, 'chatgpt') || str_contains($value, 'openai') => ['fa-solid fa-wand-magic-sparkles', 'insight-icon-openai'],
+                                str_contains($value, 'node.js') || str_contains($value, 'nodejs') => ['fa-brands fa-node-js', 'insight-icon-tracker'],
+                                default => ['fa-solid fa-globe', 'insight-icon-domain'],
+                            };
+                            return match (true) {
+                                str_contains($value, 'brave') => ['fa-solid fa-shield-halved', 'insight-icon-brave'],
+                                str_contains($value, 'chatgpt') || str_contains($value, 'openai') => ['fa-solid fa-wand-magic-sparkles', 'insight-icon-openai'],
+                                str_contains($value, 'slack') => ['fa-brands fa-slack', 'insight-icon-slack'],
+                                str_contains($value, 'opera') => ['fa-brands fa-opera', 'insight-icon-opera'],
+                                str_contains($value, 'whatsapp') => ['fa-brands fa-whatsapp', 'insight-icon-whatsapp'],
+                                str_contains($value, 'spotify') => ['fa-brands fa-spotify', 'insight-icon-spotify'],
+                                str_contains($value, 'explorer') => ['fa-solid fa-folder-tree', 'insight-icon-explorer'],
+                                str_contains($value, 'tracker') => ['fa-solid fa-chart-line', 'insight-icon-tracker'],
+                                str_contains($value, 'terminal') => ['fa-solid fa-terminal', 'insight-icon-default'],
+                                default => ['fa-solid fa-cube', 'insight-icon-default'],
+                            };
+                        };
+                        $consolidatedTotal = $consolidatedApps->sum('seconds') + $consolidatedDomains->sum('seconds');
+                    @endphp
+                    <div class="consolidated-report-hero">
+                        <div class="consolidated-report-hero-copy"><span><i class="fa-solid fa-layer-group"></i> Inteligencia consolidada</span><h3>Actividad del periodo</h3><p>Lectura compacta desde resúmenes diarios y bloques de cinco minutos, sin consultar eventos crudos.</p></div>
+                        <div class="consolidated-report-metrics"><div><i class="fa-solid fa-clock"></i><span>Tiempo analizado</span><b>{{ $fmt($consolidatedTotal) }}</b></div><div><i class="fa-solid fa-window-maximize"></i><span>Aplicaciones</span><b>{{ $consolidatedApps->count() }}</b></div><div><i class="fa-solid fa-globe"></i><span>Dominios</span><b>{{ $consolidatedDomains->count() }}</b></div><div><i class="fa-solid fa-cubes-stacked"></i><span>Bloques 5 min</span><b>{{ number_format($consolidatedBuckets) }}</b></div></div>
+                    </div>
+                    <div class="consolidated-ranking-grid">
+                        @foreach([['title'=>'Aplicaciones con mayor foco','subtitle'=>'Herramientas detectadas por el agente durante el periodo.','items'=>$consolidatedApps,'domain'=>false,'icon'=>'fa-solid fa-window-maximize','tone'=>'indigo'],['title'=>'Dominios visitados','subtitle'=>'Portales identificados durante la navegación.','items'=>$consolidatedDomains,'domain'=>true,'icon'=>'fa-solid fa-globe','tone'=>'cyan']] as $panel)
+                            @php
+                                $maxSeconds = max(1, (int) $panel['items']->max('seconds'));
+                            @endphp
+                            <section class="consolidated-ranking-card {{ $panel['tone'] }}">
+                                <header><div class="consolidated-ranking-title"><span><i class="{{ $panel['icon'] }}"></i></span><div><h4>{{ $panel['title'] }}</h4><p>{{ $panel['subtitle'] }}</p></div></div><b>{{ $panel['items']->count() }} registros</b></header>
+                                <div class="consolidated-ranking-list">
+                                    @forelse($panel['items'] as $item)
+                                        @php
+                                            $label = $panel['domain'] ? ($item->domain ?: 'Sin dominio') : ($item->app ?: 'Aplicación sin nombre');
+                                            [$iconClass, $iconTheme] = $consolidatedIcon($label, $panel['domain']);
+                                            $percentage = max(3, min(100, ((int) $item->seconds / $maxSeconds) * 100));
+                                        @endphp
+                                        <article class="consolidated-ranking-row">
+                                            <span class="consolidated-rank">{{ str_pad((string) $loop->iteration, 2, '0', STR_PAD_LEFT) }}</span>
+                                            <span class="insight-app-icon {{ $iconTheme }}"><i class="{{ $iconClass }}"></i></span>
+                                            <div class="consolidated-row-main"><div><strong title="{{ $label }}">{{ $label }}</strong><small>{{ number_format(((int) $item->seconds / $maxSeconds) * 100) }}% del máximo · {{ number_format((int) $item->events) }} eventos</small></div><span><i style="width: {{ $percentage }}%"></i></span></div>
+                                            <b>{{ $fmt($item->seconds) }}</b>
+                                        </article>
+                                    @empty
+                                        <div class="consolidated-empty"><i class="fa-regular fa-folder-open"></i><b>Sin datos suficientes</b><p>El agente aún no ha reportado actividad para este periodo.</p></div>
+                                    @endforelse
+                                </div>
+                            </section>
+                        @endforeach
                     </div>
                 @elseif($tab === 'incidents')
                     <div class="border-b border-slate-100 p-5"><h3 class="font-bold text-slate-900">Incidencias y bloqueos</h3><p class="mt-1 text-xs text-slate-500">Eventos de bloqueo, sitios restringidos y sesiones bloqueadas dentro del periodo.</p></div>

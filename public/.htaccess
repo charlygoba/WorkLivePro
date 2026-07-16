@@ -5,6 +5,14 @@
 
     RewriteEngine On
 
+    # Entrada canónica del panel. Evita que la raíz física public/ dependa del
+    # matcher de rutas cacheadas y dirige siempre al tablero.
+    RewriteCond %{REQUEST_URI} ^(.*/public)/?$
+    RewriteRule ^$ %1/dashboard [R=302,L,NE]
+    # En hosting, cuando el DocumentRoot ya apunta a public/, la URI raíz es /.
+    RewriteCond %{REQUEST_URI} ^/$
+    RewriteRule ^$ /dashboard [R=302,L,NE]
+
     # Handle Authorization Header
     RewriteCond %{HTTP:Authorization} .
     RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]

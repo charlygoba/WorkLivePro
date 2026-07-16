@@ -8,6 +8,11 @@ use Illuminate\Support\Facades\Hash;
 
 class WebAuthController extends Controller
 {
+    public function home()
+    {
+        return redirect()->route('dashboard');
+    }
+
     public function showLogin() { return view('auth.login'); }
 
     public function login(Request $request)

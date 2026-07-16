@@ -42,4 +42,5 @@ Route::middleware('worklive.web')->group(function () {
     Route::post('/settings/admins', [DashboardController::class, 'addAdmin'])->name('settings.admins.store');
     Route::delete('/settings/admins/{email}', [DashboardController::class, 'removeAdmin'])->name('settings.admins.delete');
 });
-Route::get('/', fn () => redirect()->route('dashboard'))->name('home');
+// URI vacío para la raíz real del front controller; conserva GET al cachear rutas en Laravel 12.
+Route::get('', [WebAuthController::class, 'home'])->name('home');

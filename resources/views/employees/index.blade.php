@@ -55,7 +55,7 @@
                         <tbody class="divide-y divide-slate-100">
                             @forelse($employees as $employee)
                                 <tr class="transition hover:bg-indigo-50/30">
-                                    <td class="px-5 py-3.5"><div class="flex items-center gap-4"><div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-indigo-100 bg-indigo-50 text-[10px] font-black uppercase text-indigo-700">{{ collect(explode(' ', $employee->name))->filter()->take(2)->map(fn($name) => mb_substr($name,0,1))->join('') }}</div><div class="min-w-0"><a href="{{ route('employees.show',$employee->id) }}" class="block truncate font-bold text-slate-950 transition hover:text-indigo-600">{{ $employee->name }}</a>@if($employee->client_key)<button type="button" data-copy="{{ $employee->client_key }}" class="copy-key mt-1 inline-flex items-center gap-1 rounded-md bg-indigo-50 px-1.5 py-0.5 font-mono text-[9px] font-bold text-indigo-600 transition hover:bg-indigo-100"><i class="fa-solid fa-key" aria-hidden="true"></i><span>{{ $employee->client_key }}</span></button>@endif</div></div></td>
+                                    <td class="px-5 py-3.5"><div class="flex items-center gap-4"><div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-indigo-100 bg-indigo-50 text-[10px] font-black uppercase text-indigo-700">{{ collect(explode(' ', $employee->name))->filter()->take(2)->map(fn($name) => mb_substr($name,0,1))->join('') }}</div><div class="min-w-0"><a href="{{ route('employees.show',$employee->id) }}" class="block truncate font-bold text-slate-950 transition hover:text-indigo-600">{{ $employee->name }}</a>@if($employee->client_key)<button type="button" data-copy="{{ $employee->client_key }}" data-revealed="false" aria-label="Mostrar KEY de vinculación" title="Mostrar KEY" class="toggle-key mt-1 inline-flex items-center gap-1 rounded-md bg-indigo-50 px-1.5 py-0.5 font-mono text-[9px] font-bold text-indigo-600 transition hover:bg-indigo-100"><i class="fa-solid fa-eye" aria-hidden="true"></i><span>Mostrar KEY</span></button>@endif</div></div></td>
                                     <td class="px-4 py-3.5 font-semibold text-slate-800">{{ $employee->department }}</td>
                                     <td class="px-4 py-3.5"><span class="block font-medium text-slate-700"><i class="fa-solid fa-location-dot mr-1 text-slate-400" aria-hidden="true"></i>{{ $employee->country }}</span><span class="mt-0.5 block font-mono text-[9px] text-slate-400">{{ $employee->timezone }}</span></td>
                                     <td class="px-4 py-3.5"><span class="inline-flex items-center gap-1.5 rounded-full px-2 py-1 font-mono text-[8px] font-bold uppercase {{ $statusClass($employee->status) }}"><i class="{{ $statusIcon($employee->status) }}" aria-hidden="true"></i>{{ $statusLabel($employee->status) }}</span></td>
@@ -78,9 +78,16 @@
 
 @include('employees.crud-modal')
 <script>
-    document.querySelectorAll('.copy-key').forEach((button) => button.addEventListener('click', () => navigator.clipboard?.writeText(button.dataset.copy).then(() => {
-        const label = button.querySelector('span'); const original = label.textContent; label.textContent = 'KEY copiada'; setTimeout(() => label.textContent = original, 1500);
-    })));
+    document.querySelectorAll('.toggle-key').forEach((button) => button.addEventListener('click', () => {
+        const revealed = button.dataset.revealed === 'true';
+        const label = button.querySelector('span');
+        const icon = button.querySelector('i');
+        button.dataset.revealed = String(!revealed);
+        button.setAttribute('aria-label', revealed ? 'Mostrar KEY de vinculación' : 'Ocultar KEY de vinculación');
+        button.setAttribute('title', revealed ? 'Mostrar KEY' : 'Ocultar KEY');
+        label.textContent = revealed ? 'Mostrar KEY' : button.dataset.copy;
+        icon.className = revealed ? 'fa-solid fa-eye' : 'fa-solid fa-eye-slash';
+    }));
     document.querySelectorAll('a[href*="edit=1"]').forEach((link) => link.addEventListener('click', (event) => {
         event.preventDefault();
         const row = link.closest('tr'), cells = row.querySelectorAll('td'), profile = row.querySelector('a[href*="/employees/"]');

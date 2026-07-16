@@ -91,4 +91,31 @@
         </div>
     </main>
 </div>
+<script>
+(() => {
+    const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
+    const comparable = value => {
+        const text = normalize(value);
+        const date = text.match(/^(\d{2})\/(\d{2})\/(\d{4})(?:\s+(\d{1,2}):(\d{2}))?/);
+        if (date) return Date.UTC(+date[3], +date[2] - 1, +date[1], +(date[4] || 0), +(date[5] || 0));
+        const duration = text.match(/(\d+)h\s*(\d+)m/i);
+        if (duration) return (+duration[1] * 3600) + (+duration[2] * 60);
+        const values = [...text.matchAll(/\d+(?:[.,]\d+)?/g)].map(match => Number(match[0].replace(',', '.')));
+        return values.length ? values.at(-1) : text.toLocaleLowerCase('es');
+    };
+    document.querySelectorAll('main section table').forEach(table => {
+        if (!table.tHead || !table.tBodies.length) return;
+        const headers = [...table.tHead.rows[0].cells]; let activeHeader = null; let activeDirection = 'asc';
+        const paint = () => headers.forEach(header => { const icon = header.querySelector('[data-sort-icon]'); if (icon) icon.className = activeHeader === header ? `fa-solid ${activeDirection === 'asc' ? 'fa-sort-up' : 'fa-sort-down'} ml-1 text-indigo-500` : 'fa-solid fa-sort ml-1 text-slate-300'; });
+        headers.forEach((header, index) => {
+            const label = normalize(header.textContent).toLowerCase();
+            if (['#', 'aporte al equipo', 'acciones', 'jornada registrada'].includes(label)) return;
+            header.classList.add('cursor-pointer', 'select-none', 'transition', 'hover:text-indigo-600'); header.setAttribute('role', 'button'); header.setAttribute('tabindex', '0'); header.setAttribute('title', 'Ordenar por esta columna');
+            const icon = document.createElement('i'); icon.dataset.sortIcon = 'true'; icon.className = 'fa-solid fa-sort ml-1 text-slate-300'; header.append(icon);
+            const sort = () => { activeDirection = activeHeader === header && activeDirection === 'asc' ? 'desc' : 'asc'; activeHeader = header; const rows = [...table.tBodies[0].rows].filter(row => row.cells.length === headers.length); rows.sort((left, right) => { const a = comparable(left.cells[index]?.innerText), b = comparable(right.cells[index]?.innerText); const result = typeof a === 'number' && typeof b === 'number' ? a - b : String(a).localeCompare(String(b), 'es', { numeric: true }); return activeDirection === 'asc' ? result : -result; }); rows.forEach(row => table.tBodies[0].append(row)); paint(); };
+            header.addEventListener('click', sort); header.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); sort(); } });
+        });
+    });
+})();
+</script>
 @endsection

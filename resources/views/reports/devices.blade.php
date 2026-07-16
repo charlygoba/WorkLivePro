@@ -23,6 +23,30 @@
     </main>
 </div>
 
+<script>
+(() => {
+    const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
+    const comparable = value => {
+        const text = normalize(value);
+        const date = text.match(/^(\d{2})\/(\d{2})\/(\d{4})\s+(\d{1,2}):(\d{2})/);
+        if (date) return Date.UTC(+date[3], +date[2] - 1, +date[1], +date[4], +date[5]);
+        const values = [...text.matchAll(/\d+(?:[.,]\d+)?/g)].map(match => Number(match[0].replace(',', '.')));
+        return values.length ? values.at(-1) : text.toLocaleLowerCase('es');
+    };
+    document.querySelectorAll('main section table').forEach(table => {
+        if (!table.tHead || !table.tBodies.length) return;
+        const headers = [...table.tHead.rows[0].cells]; let activeHeader = null; let activeDirection = 'asc';
+        const paint = () => headers.forEach(header => { const icon = header.querySelector('[data-sort-icon]'); if (icon) icon.className = activeHeader === header ? `fa-solid ${activeDirection === 'asc' ? 'fa-sort-up' : 'fa-sort-down'} ml-1 text-indigo-500` : 'fa-solid fa-sort ml-1 text-slate-300'; });
+        headers.forEach((header, index) => {
+            if (normalize(header.textContent).toLowerCase() === 'acciones') return;
+            header.classList.add('cursor-pointer', 'select-none', 'transition', 'hover:text-indigo-600'); header.setAttribute('role', 'button'); header.setAttribute('tabindex', '0'); header.setAttribute('title', 'Ordenar por esta columna');
+            const icon = document.createElement('i'); icon.dataset.sortIcon = 'true'; icon.className = 'fa-solid fa-sort ml-1 text-slate-300'; header.append(icon);
+            const sort = () => { activeDirection = activeHeader === header && activeDirection === 'asc' ? 'desc' : 'asc'; activeHeader = header; const rows = [...table.tBodies[0].rows].filter(row => row.cells.length === headers.length); rows.sort((left, right) => { const a = comparable(left.cells[index]?.innerText), b = comparable(right.cells[index]?.innerText); const result = typeof a === 'number' && typeof b === 'number' ? a - b : String(a).localeCompare(String(b), 'es', { numeric: true }); return activeDirection === 'asc' ? result : -result; }); rows.forEach(row => table.tBodies[0].append(row)); paint(); };
+            header.addEventListener('click', sort); header.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); sort(); } });
+        });
+    });
+})();
+</script>
 <div id="device-modal" class="employee-crud-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="device-modal-title"><section class="employee-crud-dialog device-detail-dialog"><header class="employee-crud-header"><div><span class="employee-crud-kicker"><i class="fa-solid fa-microchip mr-1"></i>Ficha de dispositivo</span><h3 id="device-modal-title">—</h3><p id="device-modal-owner">—</p></div><button type="button" data-close-device-modal class="employee-crud-close" aria-label="Cerrar modal">×</button></header><div id="device-modal-content" class="device-modal-body"></div><footer class="employee-crud-actions device-detail-actions"><button type="button" data-close-device-modal>Cerrar</button></footer></section></div>
 <script>
 (() => { const modal = document.getElementById('device-modal'), title = document.getElementById('device-modal-title'), owner = document.getElementById('device-modal-owner'), content = document.getElementById('device-modal-content'); const close = () => modal.classList.add('hidden'); const esc = value => String(value ?? 'No reportado').replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[char])); const fields = [['Marca / fabricante', 'brand', 'fa-solid fa-building'],['Modelo del equipo', 'model', 'fa-solid fa-laptop'],['Procesador', 'processor', 'fa-solid fa-microchip'],['Memoria RAM', 'ram', 'fa-solid fa-memory'],['Almacenamiento', 'storage', 'fa-solid fa-hard-drive'],['Número de serie', 'serial_number', 'fa-solid fa-barcode'],['Sistema operativo', 'os', 'fa-brands fa-windows']]; const value = (device, key, suffix = '') => `${esc(device[key])}${device[key] != null && device[key] !== '' ? suffix : ''}`; document.querySelectorAll('.device-detail').forEach(button => button.addEventListener('click', () => { const device = JSON.parse(button.dataset.device); title.textContent = device.hostname || 'Equipo sin nombre'; owner.textContent = device.employee_name ? `Asignado a ${device.employee_name}${device.employee_department ? ` · ${device.employee_department}` : ''}` : 'Sin responsable asignado'; content.innerHTML = `<article class="device-record device-modal-record"><div class="device-spec-grid">${fields.map(([label, key, icon]) => `<div class="device-spec-card"><div class="device-spec-label"><span><i class="${icon}"></i> ${label}</span><i class="fa-solid fa-lock device-lock" title="Campo reportado por el cliente"></i></div><div class="device-spec-value">${value(device, key)}</div></div>`).join('')}</div><div class="device-runtime"><div><span><i class="fa-solid fa-network-wired"></i> Dirección IP local</span><strong>${value(device, 'ip')}</strong></div><div><span><i class="fa-solid fa-code-branch"></i> Versión del agente</span><strong>${value(device, 'version')}</strong></div><div><span><i class="fa-solid fa-chart-simple"></i> Uso de disco</span><strong>${value(device, 'disk_used_percent', '%')}</strong></div></div></article>`; modal.classList.remove('hidden'); })); document.querySelectorAll('[data-close-device-modal]').forEach(button => button.addEventListener('click', close)); modal.addEventListener('click', event => { if (event.target === modal) close(); }); document.addEventListener('keydown', event => { if (event.key === 'Escape') close(); }); })();

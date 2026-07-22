@@ -114,7 +114,7 @@
 @endif
 @if($tab==='events')
 @php
-    $eventSeconds = $events->sum('duration');
+    $eventSeconds = $eventDurationTotal;
     $activeEvents = $events->where('event_type', 'active')->count();
     $incidents = $events->whereIn('event_type', ['blocked', 'blocked-site', 'locked'])->count();
     $groupBy = request('group_by', 'none');
@@ -144,7 +144,7 @@
             </div>
             <div class="timeline-summary-cards">
                 <div class="timeline-summary-card border-indigo-100"><span>Mostrados</span><b class="text-slate-800">{{ $events->count() }}</b></div>
-                <div class="timeline-summary-card border-emerald-100"><span>Tiempo</span><b class="text-emerald-600">{{ $fmt($eventSeconds) }}</b></div>
+                <div class="timeline-summary-card border-emerald-100"><span>Tiempo total</span><b class="text-emerald-600">{{ $fmt($eventSeconds) }}</b></div>
                 <div class="timeline-summary-card {{ $incidents ? 'border-rose-100' : 'border-slate-100' }}"><span>Alertas</span><b class="{{ $incidents ? 'text-rose-600' : 'text-slate-500' }}">{{ $incidents }}</b></div>
             </div>
         </div>
@@ -176,6 +176,12 @@
         </form>
 
         <div class="mt-5 overflow-hidden rounded-xl border border-slate-100">
+            @if($groupBy === 'none' && $events->isNotEmpty())
+                <div class="flex items-center justify-between gap-3 border-b border-indigo-100 bg-indigo-50/70 px-4 py-2.5 font-mono text-[10px]">
+                    <span class="font-bold uppercase tracking-wider text-indigo-700"><i class="fa-solid fa-filter-circle-check mr-1.5" aria-hidden="true"></i>Total de resultados</span>
+                    <span class="font-semibold text-slate-600">{{ number_format($eventTotal) }} eventos <b class="ml-2 text-indigo-700">{{ $fmt($eventSeconds) }}</b></span>
+                </div>
+            @endif
             <div class="overflow-x-auto"><table class="min-w-[880px] w-full text-left text-xs"><thead><tr class="border-b border-slate-100 bg-slate-50/80 font-mono text-[9px] font-bold uppercase tracking-wider text-slate-400"><th class="px-4 py-3">Momento</th><th class="px-4 py-3">Estado</th><th class="px-4 py-3">Aplicación</th><th class="px-4 py-3">Dominio</th><th class="px-4 py-3">Actividad detectada</th><th class="px-4 py-3 text-right">Duración</th></tr></thead>
             @forelse($eventGroups as $groupName=>$groupEvents)
                 @php

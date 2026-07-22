@@ -223,6 +223,7 @@ class DashboardController extends Controller
         if ($request->boolean('blocked_only')) $eventQuery->whereIn('event_type',['blocked','blocked-site']);
         $eventSearch = trim((string) $request->query('event_search',''));
         if ($eventSearch !== '') $eventQuery->where(fn ($q) => $q->where('app','like','%'.$eventSearch.'%')->orWhere('title','like','%'.$eventSearch.'%')->orWhere('domain','like','%'.$eventSearch.'%'));
+        $eventDurationTotal = (int) ((clone $eventQuery)->sum('duration') ?? 0);
         $eventsPaginator = null;
         if ($tab === 'events') {
             $perPage = (int) $request->query('per_page', 100);
@@ -323,7 +324,7 @@ class DashboardController extends Controller
         };
         $bucketDirection = $request->query('bucket_direction', 'desc') === 'asc' ? 'asc' : 'desc';
         $consolidatedBuckets = $bucketQuery->orderBy($bucketSortColumn, $bucketDirection)->limit(1000)->get()->each(fn($bucket) => $bucket->display_start = Carbon::parse($bucket->bucket_start_utc, 'UTC')->setTimezone($corporateTimezone));
-        return view('employees.show', compact('employee', 'events', 'eventsPaginator', 'eventTotal', 'timeMetrics', 'summaries', 'devices', 'appTotals', 'domainTotals', 'corporateTimezone', 'consolidatedDays', 'consolidatedBuckets', 'bucketDateFrom', 'bucketDateTo'));
+        return view('employees.show', compact('employee', 'events', 'eventsPaginator', 'eventTotal', 'eventDurationTotal', 'timeMetrics', 'summaries', 'devices', 'appTotals', 'domainTotals', 'corporateTimezone', 'consolidatedDays', 'consolidatedBuckets', 'bucketDateFrom', 'bucketDateTo'));
     }
 
     public function updateDevice(Request $request, string $employeeId, string $deviceId)

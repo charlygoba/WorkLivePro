@@ -154,8 +154,8 @@ class ActivityAggregationService
             $target[$key]['first_event_at'] = $row['first_event_at'] < $target[$key]['first_event_at'] ? $row['first_event_at'] : $target[$key]['first_event_at'];
             $target[$key]['last_event_at'] = $row['last_event_at'] > $target[$key]['last_event_at'] ? $row['last_event_at'] : $target[$key]['last_event_at'];
         }
-        if (array_key_exists('activity_title', $row) && empty($target[$key]['activity_title']) && ! empty($row['activity_title'])) {
-            $target[$key]['activity_title'] = $row['activity_title'];
+        if (array_key_exists('activity_title', $row)) {
+            $target[$key]['activity_title'] = $this->preferredActivityTitle($target[$key]['activity_title'] ?? null, $row['activity_title'] ?? null);
         }
     }
 
@@ -168,9 +168,23 @@ class ActivityAggregationService
                 'active_seconds' => $existing->active_seconds + $row['active_seconds'], 'idle_seconds' => $existing->idle_seconds + $row['idle_seconds'],
                 'event_count' => $existing->event_count + $row['event_count'], 'first_event_at' => min($existing->first_event_at, (string) $row['first_event_at']),
                 'last_event_at' => max($existing->last_event_at, (string) $row['last_event_at']),
-                'activity_title' => $existing->activity_title ?: ($row['activity_title'] ?? null), 'updated_at' => now(),
+                'activity_title' => $this->preferredActivityTitle($existing->activity_title, $row['activity_title'] ?? null), 'updated_at' => now(),
             ]);
         }
+    }
+
+    private function preferredActivityTitle(?string $current, ?string $candidate): ?string
+    {
+        $current = trim((string) $current);
+        $candidate = trim((string) $candidate);
+
+        if ($current === '') return $candidate !== '' ? $candidate : null;
+        if ($candidate === '') return $current;
+
+        // Cuando un bloque reúne varios eventos, conservar el título con más
+        // contexto permite distinguir llamadas, reuniones y ventanas concretas
+        // sin exigir cambios al contrato de ninguna versión del cliente.
+        return mb_strlen($candidate) > mb_strlen($current) ? $candidate : $current;
     }
 
     private function mergeSummary(string $table, array $rows, array $keys): void

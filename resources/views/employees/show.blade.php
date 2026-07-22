@@ -42,6 +42,23 @@
     }, SORT_NATURAL, $bucketDirection === 'desc');
     $dateGroups = $bucketRows->groupBy(fn ($bucket) => $bucket->display_start->format('Y-m-d'));
     $duration = fn ($rows) => (int) $rows->sum(fn ($row) => (int) $row->active_seconds + (int) $row->idle_seconds);
+    $activityDescription = function ($bucket, bool $isLocalActivity): array {
+        $app = trim((string) ($bucket->app ?: 'Sin aplicación'));
+        $domain = trim((string) ($bucket->domain ?: 'Sin dominio'));
+        $title = trim((string) ($bucket->activity_title ?? ''));
+        $genericTitle = $title === '' || in_array(mb_strtolower($title), [mb_strtolower($app), mb_strtolower($domain), 'sin título reportado'], true);
+
+        if (! $genericTitle) {
+            return [
+                'primary' => $title,
+                'secondary' => $isLocalActivity ? 'Actividad en '.$app : 'Navegó en '.$domain,
+            ];
+        }
+
+        return $isLocalActivity
+            ? ['primary' => 'Usó '.$app, 'secondary' => null]
+            : ['primary' => 'Navegó en '.$domain, 'secondary' => null];
+    };
 @endphp
 <section class="profile-tab-hero"><div class="profile-tab-hero-copy"><span class="profile-tab-hero-icon"><i class="fa-solid fa-layer-group"></i></span><div><small>Actividad consolidada</small><h2>Resumen consolidado</h2><p>Actividad histórica agrupada por fecha y contexto.</p></div></div><div class="profile-tab-hero-metrics"><span><i class="fa-solid fa-calendar-days"></i> Fechas<b>{{ $dateGroups->count() }}</b></span><span><i class="fa-solid fa-cubes"></i> Bloques<b>{{ number_format($bucketRows->count()) }}</b></span><span class="is-green"><i class="fa-solid fa-bolt"></i> Activo<b>{{ $fmt($bucketRows->sum(fn ($row) => (int) $row->active_seconds)) }}</b></span><span class="is-amber"><i class="fa-solid fa-pause"></i> Inactivo<b>{{ $fmt($bucketRows->sum(fn ($row) => (int) $row->idle_seconds)) }}</b></span></div></section>
 <section class="rounded-2xl border border-slate-100 bg-white p-6 shadow-sm">
@@ -93,7 +110,11 @@
             <div class="border-t border-slate-100 bg-white p-3">
                 @foreach($domainGroups as $domainName=>$domainRows)
                 @php $isLocalActivity = in_array($domainName, ['Sin dominio', 'Aplicación local'], true); @endphp
-                <div class="mb-3 overflow-hidden rounded-lg border border-slate-100 last:mb-0"><div class="flex items-center justify-between gap-3 bg-slate-50 px-3 py-2"><span class="min-w-0 text-[10px] font-bold text-slate-700"><i class="{{ $isLocalActivity ? 'fa-solid fa-bolt text-indigo-500' : 'fa-solid fa-globe text-cyan-500' }} mr-1"></i>{{ $isLocalActivity ? 'Actividad detectada' : $domainName }}</span><span class="shrink-0 font-mono text-[10px] text-slate-500">{{ $fmt($duration($domainRows)) }} · {{ number_format($domainRows->sum('event_count')) }} eventos</span></div><div class="overflow-x-auto"><table class="min-w-[760px] w-full text-left text-[11px]"><thead class="font-mono text-[9px] uppercase tracking-wider text-slate-400"><tr><th class="px-3 py-2">Hora</th><th class="px-3 py-2">Actividad detectada</th><th class="px-3 py-2">Eventos</th><th class="px-3 py-2 text-right">Duración</th></tr></thead><tbody class="divide-y divide-slate-100">@foreach($domainRows as $bucket)<tr class="hover:bg-indigo-50/30"><td class="px-3 py-2 font-mono text-slate-500">{{ $bucket->display_start->format('H:i') }}</td><td class="max-w-[420px] px-3 py-2 text-slate-600"><span class="block truncate" title="{{ $bucket->activity_title ?? '' }}">{{ $isLocalActivity ? ($bucket->activity_title ?: 'Actividad local detectada') : 'Navegación web' }}</span></td><td class="px-3 py-2 font-mono text-slate-500">{{ $bucket->event_count }}</td><td class="px-3 py-2 text-right font-mono font-bold text-indigo-600">{{ $fmt((int) $bucket->active_seconds + (int) $bucket->idle_seconds) }}</td></tr>@endforeach</tbody></table></div></div>
+                <div class="mb-3 overflow-hidden rounded-lg border border-slate-100 last:mb-0"><div class="flex items-center justify-between gap-3 bg-slate-50 px-3 py-2"><span class="min-w-0 text-[10px] font-bold text-slate-700"><i class="{{ $isLocalActivity ? 'fa-solid fa-bolt text-indigo-500' : 'fa-solid fa-globe text-cyan-500' }} mr-1"></i>{{ $isLocalActivity ? 'Actividad detectada' : $domainName }}</span><span class="shrink-0 font-mono text-[10px] text-slate-500">{{ $fmt($duration($domainRows)) }} · {{ number_format($domainRows->sum('event_count')) }} eventos</span></div><div class="overflow-x-auto"><table class="min-w-[760px] w-full text-left text-[11px]"><thead class="font-mono text-[9px] uppercase tracking-wider text-slate-400"><tr><th class="px-3 py-2">Hora</th><th class="px-3 py-2">Actividad detectada</th><th class="px-3 py-2">Eventos</th><th class="px-3 py-2 text-right">Duración</th></tr></thead><tbody class="divide-y divide-slate-100">@foreach($domainRows as $bucket)
+                    @php
+                        $activity = $activityDescription($bucket, $isLocalActivity);
+                    @endphp
+                    <tr class="hover:bg-indigo-50/30"><td class="px-3 py-2 font-mono text-slate-500">{{ $bucket->display_start->format('H:i') }}</td><td class="max-w-[420px] px-3 py-2 text-slate-600"><span class="block truncate font-medium text-slate-700" title="{{ $activity['primary'] }}">{{ $activity['primary'] }}</span>@if($activity['secondary'])<span class="mt-0.5 block truncate text-[9px] text-slate-400">{{ $activity['secondary'] }}</span>@endif</td><td class="px-3 py-2 font-mono text-slate-500">{{ $bucket->event_count }}</td><td class="px-3 py-2 text-right font-mono font-bold text-indigo-600">{{ $fmt((int) $bucket->active_seconds + (int) $bucket->idle_seconds) }}</td></tr>@endforeach</tbody></table></div></div>
                 @endforeach
             </div>
         </details>

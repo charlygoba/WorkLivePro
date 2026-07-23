@@ -247,6 +247,7 @@ class DashboardController extends Controller
             ->whereBetween('event_timestamp', [$todayStart->copy()->utc(), $nowForEmployee->copy()->utc()])
             ->selectRaw("COALESCE(SUM(CASE WHEN event_type = 'active' THEN duration ELSE 0 END), 0) AS active_seconds")
             ->selectRaw("COALESCE(SUM(CASE WHEN event_type = 'idle' THEN duration ELSE 0 END), 0) AS idle_seconds")
+            ->selectRaw("COALESCE(SUM(CASE WHEN event_type = 'locked' THEN duration ELSE 0 END), 0) AS locked_seconds")
             ->first();
 
         // Hoy y la semana en curso se calculan desde activity_events, la misma
@@ -258,13 +259,16 @@ class DashboardController extends Controller
             ->whereBetween('event_timestamp', [$weekStart->copy()->utc(), $nowForEmployee->copy()->utc()])
             ->selectRaw("COALESCE(SUM(CASE WHEN event_type = 'active' THEN duration ELSE 0 END), 0) AS active_seconds")
             ->selectRaw("COALESCE(SUM(CASE WHEN event_type = 'idle' THEN duration ELSE 0 END), 0) AS idle_seconds")
+            ->selectRaw("COALESCE(SUM(CASE WHEN event_type = 'locked' THEN duration ELSE 0 END), 0) AS locked_seconds")
             ->first();
 
         $timeMetrics = [
             'todayActive' => (int) ($todayEvents->active_seconds ?? 0),
             'todayIdle' => (int) ($todayEvents->idle_seconds ?? 0),
+            'todayLocked' => (int) ($todayEvents->locked_seconds ?? 0),
             'weekActive' => max((int) ($weekEvents->active_seconds ?? 0), (int) ($todayEvents->active_seconds ?? 0)),
             'weekIdle' => max((int) ($weekEvents->idle_seconds ?? 0), (int) ($todayEvents->idle_seconds ?? 0)),
+            'weekLocked' => max((int) ($weekEvents->locked_seconds ?? 0), (int) ($todayEvents->locked_seconds ?? 0)),
         ];
         $timeMetrics += [
             'weekStart' => $weekStart->format('d/m'),

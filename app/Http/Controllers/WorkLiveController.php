@@ -175,7 +175,10 @@ class WorkLiveController extends Controller
                     }
 
                     $id = 'evt-'.Str::lower(Str::random(24));
-                    $timestamp = Carbon::parse($event['timestamp'] ?? now());
+                    // La base conserva todos los instantes en UTC. El agente
+                    // puede enviar ISO-8601 con el huso local; Carbon respeta
+                    // ese offset y aquí se normaliza antes de persistirlo.
+                    $timestamp = Carbon::parse($event['timestamp'] ?? now())->utc();
                     $duration = (int) ($event['duration'] ?? 0);
                     $eventType = $event['eventType'];
                     $employeeId = $employee->id;
@@ -255,7 +258,7 @@ class WorkLiveController extends Controller
                 $agent->forceFill(['device_id' => $device->id, 'last_seen_at' => now()])->saveQuietly();
             }
         }
-        $event = ActivityEvent::create(['id' => 'evt-'.Str::lower(Str::random(24)), 'company_id' => config('worklive.company_id'), 'employee_id' => $employee->id, 'employee_name' => $data['employeeName'] ?? $employee->name, 'department' => $data['department'] ?? $employee->department, 'event_timestamp' => $data['timestamp'] ?? now(), 'event_type' => $data['eventType'], 'app' => $data['app'] ?? null, 'title' => $data['title'] ?? null, 'domain' => $data['domain'] ?? null, 'duration' => $data['duration'] ?? 0, 'agent_id' => $data['agentId'] ?? ($agent?->id)]);
+        $event = ActivityEvent::create(['id' => 'evt-'.Str::lower(Str::random(24)), 'company_id' => config('worklive.company_id'), 'employee_id' => $employee->id, 'employee_name' => $data['employeeName'] ?? $employee->name, 'department' => $data['department'] ?? $employee->department, 'event_timestamp' => Carbon::parse($data['timestamp'] ?? now())->utc(), 'event_type' => $data['eventType'], 'app' => $data['app'] ?? null, 'title' => $data['title'] ?? null, 'domain' => $data['domain'] ?? null, 'duration' => $data['duration'] ?? 0, 'agent_id' => $data['agentId'] ?? ($agent?->id)]);
         $employee->forceFill(['status' => in_array($data['eventType'], ['active', 'startup'], true) ? 'online' : $data['eventType'], 'last_active' => now(), 'current_app' => $data['app'] ?? $employee->current_app, 'current_title' => $data['title'] ?? $employee->current_title, 'current_domain' => $data['domain'] ?? $employee->current_domain, 'active_time_today' => $employee->active_time_today + ($data['eventType'] === 'active' ? ($data['duration'] ?? 0) : 0), 'idle_time_today' => $employee->idle_time_today + ($data['eventType'] === 'idle' ? ($data['duration'] ?? 0) : 0)])->saveQuietly();
         return ['eventId' => $event->id, 'employeeId' => $employee->id];
     }

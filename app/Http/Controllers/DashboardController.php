@@ -20,13 +20,9 @@ class DashboardController extends Controller
         $configuredTimezone = DB::table('company_settings')->where('company_id', $company)->value('timezone') ?: 'America/Mexico_City';
         $corporateTimezone = in_array($configuredTimezone, timezone_identifiers_list(), true) ? $configuredTimezone : 'America/Mexico_City';
         $employees = DB::table('employees')->where('company_id', $company)->orderBy('name')->get();
-        $employeeTimezones = $employees->mapWithKeys(function ($employee) {
-            $timezone = in_array($employee->timezone, timezone_identifiers_list(), true)
-                ? $employee->timezone
-                : config('app.timezone');
-
-            return [$employee->id => $timezone];
-        });
+        $employeeTimezones = $employees->mapWithKeys(fn ($employee) => [
+            $employee->id => $this->employeeTimezone($employee, $corporateTimezone),
+        ]);
 
         // Se consultan dos días UTC para cubrir el inicio de jornada de todas las
         // zonas horarias. Después se filtra por "hoy" en la zona de cada empleado.
@@ -235,7 +231,10 @@ class DashboardController extends Controller
         }
         $events->each(fn ($event) => $event->display_timestamp = Carbon::parse($event->event_timestamp, 'UTC')->setTimezone($corporateTimezone));
         $eventTotal = $eventsPaginator?->total() ?? $events->count();
-        $timezone = in_array($employee->timezone, timezone_identifiers_list(), true) ? $employee->timezone : config('app.timezone');
+        // Algunos registros históricos conservan el texto visible de la zona,
+        // por ejemplo "America/Mexico_City (UTC-6)". Para calcular periodos
+        // siempre se usa el identificador IANA válido, no la zona del servidor.
+        $timezone = $this->employeeTimezone($employee, $corporateTimezone);
         $nowForEmployee = Carbon::now($timezone);
         $todayStart = $nowForEmployee->copy()->startOfDay();
         $weekStart = $nowForEmployee->copy()->startOfWeek(Carbon::MONDAY);
@@ -250,23 +249,22 @@ class DashboardController extends Controller
             ->selectRaw("COALESCE(SUM(CASE WHEN event_type = 'idle' THEN duration ELSE 0 END), 0) AS idle_seconds")
             ->first();
 
-        // Para la semana se conservan los resúmenes de los días ya cerrados y
-        // se agrega el día actual desde activity_events. De este modo no se
-        // duplica hoy ni se muestra 0 cuando el resumen aún no se ha procesado.
-        $closedWeekEnd = $todayStart->copy()->subDay()->toDateString();
-        $closedWeek = $closedWeekEnd < $weekStart->toDateString()
-            ? collect()
-            : DB::table('daily_summaries')
-                ->where('company_id', $company)
-                ->where('employee_id', $id)
-                ->whereBetween('summary_date', [$weekStart->toDateString(), $closedWeekEnd])
-                ->get();
+        // Hoy y la semana en curso se calculan desde activity_events, la misma
+        // fuente que alimenta el Timeline. No se mezclan resúmenes atrasados
+        // con datos crudos: así el acumulado semanal siempre incluye a hoy.
+        $weekEvents = DB::table('activity_events')
+            ->where('company_id', $company)
+            ->where('employee_id', $id)
+            ->whereBetween('event_timestamp', [$weekStart->copy()->utc(), $nowForEmployee->copy()->utc()])
+            ->selectRaw("COALESCE(SUM(CASE WHEN event_type = 'active' THEN duration ELSE 0 END), 0) AS active_seconds")
+            ->selectRaw("COALESCE(SUM(CASE WHEN event_type = 'idle' THEN duration ELSE 0 END), 0) AS idle_seconds")
+            ->first();
 
         $timeMetrics = [
             'todayActive' => (int) ($todayEvents->active_seconds ?? 0),
             'todayIdle' => (int) ($todayEvents->idle_seconds ?? 0),
-            'weekActive' => (int) $closedWeek->sum('total_active_seconds') + (int) ($todayEvents->active_seconds ?? 0),
-            'weekIdle' => (int) $closedWeek->sum('total_idle_seconds') + (int) ($todayEvents->idle_seconds ?? 0),
+            'weekActive' => max((int) ($weekEvents->active_seconds ?? 0), (int) ($todayEvents->active_seconds ?? 0)),
+            'weekIdle' => max((int) ($weekEvents->idle_seconds ?? 0), (int) ($todayEvents->idle_seconds ?? 0)),
         ];
         $timeMetrics += [
             'weekStart' => $weekStart->format('d/m'),
@@ -608,6 +606,16 @@ class DashboardController extends Controller
             ->value('timezone') ?: 'America/Mexico_City';
 
         return in_array($timezone, timezone_identifiers_list(), true) ? $timezone : 'America/Mexico_City';
+    }
+
+    private function employeeTimezone(object $employee, string $fallbackTimezone): string
+    {
+        $configured = trim((string) ($employee->timezone ?? ''));
+        $candidate = preg_replace('/\\s*\\(.+$/', '', $configured) ?: $configured;
+
+        return in_array($candidate, timezone_identifiers_list(), true)
+            ? $candidate
+            : $fallbackTimezone;
     }
 
     public function exportTimeClock(Request $request)

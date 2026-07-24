@@ -342,7 +342,7 @@ class DashboardController extends Controller
         $to = (string) $request->query('date_to', $request->query('filter_date', now($corporateTimezone)->toDateString()));
         if ($from > $to) [$from, $to] = [$to, $from];
         $tab = (string) $request->query('tab', 'overview');
-        if (!in_array($tab, ['overview', 'attendance', 'productivity', 'consolidated', 'incidents'], true)) $tab = 'overview';
+        if (!in_array($tab, ['overview', 'attendance', 'productivity', 'consolidated', 'incidents', 'technical', 'timeline'], true)) $tab = 'overview';
         $query = DB::table('daily_summaries')->where('company_id', $company)->whereBetween('summary_date', [$from, $to]);
         $this->applyReportFilters($query, $request);
         $summaries = $query->orderByDesc('summary_date')->orderBy('employee_name')->get();
@@ -389,7 +389,47 @@ class DashboardController extends Controller
         $consolidatedApps = DB::table('daily_app_summaries')->where('company_id', $company)->whereBetween('summary_date', [$from, $to])->when($consolidatedIds->isNotEmpty(), fn($q) => $q->whereIn('employee_id', $consolidatedIds))->when($consolidatedIds->isEmpty(), fn($q) => $q->whereRaw('1 = 0'))->select('app', DB::raw('SUM(active_seconds + idle_seconds) AS seconds'), DB::raw('SUM(event_count) AS events'))->groupBy('app')->orderByDesc('seconds')->limit(12)->get();
         $consolidatedDomains = DB::table('daily_domain_summaries')->where('company_id', $company)->whereBetween('summary_date', [$from, $to])->when($consolidatedIds->isNotEmpty(), fn($q) => $q->whereIn('employee_id', $consolidatedIds))->when($consolidatedIds->isEmpty(), fn($q) => $q->whereRaw('1 = 0'))->select('domain', DB::raw('SUM(active_seconds + idle_seconds) AS seconds'), DB::raw('SUM(event_count) AS events'))->groupBy('domain')->orderByDesc('seconds')->limit(12)->get();
         $consolidatedBuckets = DB::table('activity_5m_buckets')->where('company_id', $company)->whereBetween('bucket_start_utc', [Carbon::parse($from, $corporateTimezone)->startOfDay()->utc(), Carbon::parse($to, $corporateTimezone)->endOfDay()->utc()])->when($consolidatedIds->isNotEmpty(), fn($q) => $q->whereIn('employee_id', $consolidatedIds))->count();
-        return view('reports.index', compact('summaries', 'employeeRows', 'attendanceRows', 'attendanceMetrics', 'incidents', 'metrics', 'employees', 'departments', 'countries', 'corporateTimezone', 'from', 'to', 'tab', 'workStart', 'workEnd', 'lateGrace', 'earlyGrace', 'consolidatedApps', 'consolidatedDomains', 'consolidatedBuckets'));
+        $rawFrom = Carbon::parse($from, $corporateTimezone)->startOfDay()->utc();
+        $rawTo = Carbon::parse($to, $corporateTimezone)->endOfDay()->utc();
+        $technicalQuery = DB::table('activity_events')->where('company_id', $company)->whereBetween('event_timestamp', [$rawFrom, $rawTo]);
+        if ($selectedIds->isNotEmpty()) $technicalQuery->whereIn('employee_id', $selectedIds);
+        elseif ($hasDimensionFilter) $technicalQuery->whereRaw('1 = 0');
+        $technicalEvents = (clone $technicalQuery)->select('employee_id', 'employee_name', 'department', 'event_type', 'agent_id', 'event_timestamp', 'duration')->get();
+        $technicalRows = $technicalEvents->groupBy('employee_id')->map(function ($items) use ($corporateTimezone) {
+            $first = $items->first(); $last = $items->sortByDesc('event_timestamp')->first();
+            return (object) ['employee_id'=>$first->employee_id,'employee_name'=>$first->employee_name ?: $first->employee_id,'department'=>$first->department ?: '—','events'=>$items->count(),'agents'=>$items->pluck('agent_id')->filter()->unique()->count(),'active'=>(int)$items->where('event_type','active')->sum('duration'),'idle'=>(int)$items->where('event_type','idle')->sum('duration'),'incidents'=>$items->whereIn('event_type',['locked','blocked','blocked-site'])->count(),'last_event'=>Carbon::parse($last->event_timestamp,'UTC')->setTimezone($corporateTimezone)];
+        })->values();
+        $technicalEventTypes = $technicalEvents->groupBy('event_type')->map(fn ($items, $type) => (object)['type'=>$type,'events'=>$items->count(),'seconds'=>(int)$items->sum('duration')])->sortByDesc('events')->values();
+        $technicalDetailMode = in_array($request->query('detail_mode', 'summary'), ['summary', 'events'], true) ? $request->query('detail_mode', 'summary') : 'summary';
+        $technicalGroupBy = in_array($request->query('group_by', 'domain'), ['domain', 'app', 'event_type'], true) ? $request->query('group_by', 'domain') : 'domain';
+        $technicalSearch = trim((string) $request->query('technical_search', ''));
+        $technicalEventType = trim((string) $request->query('technical_event_type', 'All'));
+        $technicalDetailQuery = clone $technicalQuery;
+        if ($technicalEventType !== '' && $technicalEventType !== 'All') $technicalDetailQuery->where('event_type', $technicalEventType);
+        if ($technicalSearch !== '') {
+            $term = '%'.$technicalSearch.'%';
+            $technicalDetailQuery->where(fn ($q) => $q->where('domain', 'like', $term)->orWhere('app', 'like', $term)->orWhere('title', 'like', $term)->orWhere('employee_name', 'like', $term));
+        }
+        $technicalDetailRows = $technicalDetailMode === 'events'
+            ? $technicalDetailQuery->select('event_timestamp', 'employee_name', 'event_type', 'app', 'domain', 'title', 'duration', 'agent_id')->orderByDesc('event_timestamp')->limit(1000)->get()->each(fn ($row) => $row->display_timestamp = Carbon::parse($row->event_timestamp, 'UTC')->setTimezone($corporateTimezone))
+            : $technicalDetailQuery->select($technicalGroupBy, DB::raw('COUNT(*) AS events'), DB::raw('SUM(duration) AS seconds'), DB::raw('COUNT(DISTINCT employee_id) AS employees'), DB::raw('COUNT(DISTINCT agent_id) AS agents'), DB::raw('MIN(event_timestamp) AS first_event'), DB::raw('MAX(event_timestamp) AS last_event'))->groupBy($technicalGroupBy)->orderByDesc('events')->limit(500)->get()->each(function ($row) use ($technicalGroupBy, $corporateTimezone) { $row->label = $row->{$technicalGroupBy} ?: ($technicalGroupBy === 'domain' ? 'Sin dominio' : ($technicalGroupBy === 'app' ? 'Sin aplicación' : 'Sin tipo')); $row->first_event_display = $row->first_event ? Carbon::parse($row->first_event, 'UTC')->setTimezone($corporateTimezone) : null; $row->last_event_display = $row->last_event ? Carbon::parse($row->last_event, 'UTC')->setTimezone($corporateTimezone) : null; });
+        $technicalEventTypesFilter = $technicalEvents->pluck('event_type')->filter()->unique()->sort()->values();
+        $technicalDevices = DB::table('devices')->where('company_id', $company)->when($selectedIds->isNotEmpty(), fn ($q) => $q->whereIn('employee_id', $selectedIds))->when($selectedIds->isEmpty() && $hasDimensionFilter, fn ($q) => $q->whereRaw('1 = 0'))->get(['employee_id','last_sync','version']);
+        $technicalDeviceStatus = $technicalDevices->map(function ($device) use ($corporateTimezone) { $minutes = $device->last_sync ? Carbon::parse($device->last_sync,'UTC')->setTimezone($corporateTimezone)->diffInMinutes(Carbon::now($corporateTimezone)) : null; return $minutes === null ? 'pending' : ($minutes <= 5 ? 'live' : 'stale'); })->countBy();
+        $technicalDays = Carbon::parse($from, $corporateTimezone)->diffInDays(Carbon::parse($to, $corporateTimezone)) + 1;
+        $technicalMetrics = (object)['events'=>$technicalEvents->count(),'employees'=>$technicalRows->count(),'agents'=>$technicalEvents->pluck('agent_id')->filter()->unique()->count(),'buckets'=>$consolidatedBuckets,'days'=>$technicalDays,'summaries'=>$summaries->count(),'devices'=>$technicalDevices->count(),'live'=>(int)$technicalDeviceStatus->get('live',0),'stale'=>(int)$technicalDeviceStatus->get('stale',0)];
+        $technicalMetrics->coverage = $technicalMetrics->employees && $technicalDays ? min(100, (int)round(($technicalMetrics->summaries / ($technicalMetrics->employees * $technicalDays)) * 100)) : 0;
+        $timelineQuery = clone $technicalQuery;
+        $timelineEventType = trim((string) $request->query('timeline_event_type', 'all'));
+        $timelineSearch = trim((string) $request->query('timeline_search', ''));
+        if ($timelineEventType !== '' && $timelineEventType !== 'all') $timelineQuery->where('event_type', $timelineEventType);
+        if ($timelineSearch !== '') $timelineQuery->where(fn ($q) => $q->where('app', 'like', '%'.$timelineSearch.'%')->orWhere('domain', 'like', '%'.$timelineSearch.'%')->orWhere('title', 'like', '%'.$timelineSearch.'%')->orWhere('employee_name', 'like', '%'.$timelineSearch.'%'));
+        $timelinePerPage = in_array((int) $request->query('timeline_per_page', 100), [50, 100, 250, 500], true) ? (int) $request->query('timeline_per_page', 100) : 100;
+        $timelineEvents = $timelineQuery->orderByDesc('event_timestamp')->paginate($timelinePerPage, ['*'], 'timeline_page')->withQueryString();
+        $timelineEvents->getCollection()->each(fn ($event) => $event->display_timestamp = Carbon::parse($event->event_timestamp, 'UTC')->setTimezone($corporateTimezone));
+        $timelineEventTypes = $technicalEvents->pluck('event_type')->filter()->unique()->sort()->values();
+        $timelineTotalDuration = (int) (clone $timelineQuery)->sum('duration');
+        return view('reports.index', compact('summaries', 'employeeRows', 'attendanceRows', 'attendanceMetrics', 'incidents', 'metrics', 'employees', 'departments', 'countries', 'corporateTimezone', 'from', 'to', 'tab', 'workStart', 'workEnd', 'lateGrace', 'earlyGrace', 'consolidatedApps', 'consolidatedDomains', 'consolidatedBuckets', 'technicalRows', 'technicalEventTypes', 'technicalMetrics', 'technicalDetailMode', 'technicalGroupBy', 'technicalSearch', 'technicalEventType', 'technicalEventTypesFilter', 'technicalDetailRows', 'timelineEvents', 'timelineEventType', 'timelineSearch', 'timelinePerPage', 'timelineEventTypes', 'timelineTotalDuration'));
     }
 
     public function devices(Request $request)
@@ -449,7 +489,40 @@ class DashboardController extends Controller
         $query = DB::table('daily_summaries')->where('company_id', config('worklive.company_id'))->whereBetween('summary_date', [$from, $to]);
         $this->applyReportFilters($query, $request);
         $summaries = $query->orderByDesc('summary_date')->orderBy('employee_name')->limit(10000)->get();
-        return response()->streamDownload(function () use ($summaries, $corporateTimezone, $from, $to) { $out = fopen('php://output', 'w'); fputcsv($out, ['Periodo exportado','Zona horaria',$from.' a '.$to,$corporateTimezone]); fputcsv($out, []); fputcsv($out, ['Fecha','Empleado','Departamento','País','Horas Activo','Horas Inactivo','Horas Bloqueado','Primera Actividad','Última Actividad']); foreach ($summaries as $summary) fputcsv($out, [$summary->summary_date,$summary->employee_name,$summary->department,$summary->country,number_format($summary->total_active_seconds / 3600, 2),number_format($summary->total_idle_seconds / 3600, 2),number_format($summary->total_locked_seconds / 3600, 2),$summary->first_activity ? Carbon::parse($summary->first_activity, 'UTC')->setTimezone($corporateTimezone)->format('Y-m-d H:i:s') : '—',$summary->last_activity ? Carbon::parse($summary->last_activity, 'UTC')->setTimezone($corporateTimezone)->format('Y-m-d H:i:s') : '—']); fclose($out); }, 'worklive-reporte-'.$from.'_'.$to.'.csv');
+        return response()->streamDownload(function () use ($summaries, $corporateTimezone, $from, $to) { $out = fopen('php://output', 'w'); fwrite($out, "\xEF\xBB\xBF"); $this->csvRow($out, ['Periodo exportado','Zona horaria',$from.' a '.$to,$corporateTimezone]); $this->csvRow($out, []); $this->csvRow($out, ['Fecha','Empleado','Departamento','País','Horas Activo','Horas Inactivo','Horas Bloqueado','Primera Actividad','Última Actividad']); foreach ($summaries as $summary) $this->csvRow($out, [$summary->summary_date,$summary->employee_name,$summary->department,$summary->country,number_format($summary->total_active_seconds / 3600, 2),number_format($summary->total_idle_seconds / 3600, 2),number_format($summary->total_locked_seconds / 3600, 2),$summary->first_activity ? Carbon::parse($summary->first_activity, 'UTC')->setTimezone($corporateTimezone)->format('Y-m-d H:i:s') : '—',$summary->last_activity ? Carbon::parse($summary->last_activity, 'UTC')->setTimezone($corporateTimezone)->format('Y-m-d H:i:s') : '—']); fclose($out); }, 'worklive-reporte-'.$from.'_'.$to.'.csv', ['Content-Type' => 'text/csv; charset=UTF-8']);
+    }
+
+    public function exportTimeline(Request $request)
+    {
+        $corporateTimezone = $this->corporateTimezone();
+        $from = (string) $request->query('date_from', now($corporateTimezone)->startOfMonth()->toDateString());
+        $to = (string) $request->query('date_to', now($corporateTimezone)->toDateString());
+        if ($from > $to) [$from, $to] = [$to, $from];
+        $query = DB::table('activity_events')->where('company_id', config('worklive.company_id'))->whereBetween('event_timestamp', [Carbon::parse($from, $corporateTimezone)->startOfDay()->utc(), Carbon::parse($to, $corporateTimezone)->endOfDay()->utc()]);
+        $this->applyReportEventFilters($query, $request);
+        return response()->streamDownload(function () use ($query, $corporateTimezone, $from, $to) {
+            $out = fopen('php://output', 'w');
+            fwrite($out, "\xEF\xBB\xBF");
+            $this->csvRow($out, ['Timeline WorkLive Pro', 'Periodo', $from.' a '.$to, 'Zona horaria', $corporateTimezone]);
+            $this->csvRow($out, []);
+            $this->csvRow($out, ['Momento', 'Empleado', 'Departamento', 'Tipo de evento', 'Aplicación', 'Dominio', 'Título', 'Duración (segundos)', 'Agente']);
+            foreach ($query->orderBy('event_timestamp')->orderBy('id')->cursor() as $event) $this->csvRow($out, [Carbon::parse($event->event_timestamp, 'UTC')->setTimezone($corporateTimezone)->format('Y-m-d H:i:s'), $event->employee_name, $event->department, $event->event_type, $event->app, $event->domain, $event->title, (int) $event->duration, $event->agent_id]);
+            fclose($out);
+        }, "worklive-timeline-{$from}_{$to}.csv", ['Content-Type' => 'text/csv; charset=UTF-8']);
+    }
+
+    private function csvRow($stream, array $values): void
+    {
+        $safeValues = array_map(function ($value) {
+            $value = (string) ($value ?? '');
+            $value = function_exists('iconv') ? (iconv('UTF-8', 'UTF-8//IGNORE', $value) ?: '') : $value;
+            $value = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/u', '', $value) ?? '';
+            $value = str_replace(["\r\n", "\r"], "\n", $value);
+            if (strlen($value) > 5000) $value = substr($value, 0, 5000).'…';
+            if ($value !== '' && in_array($value[0], ['=', '+', '-', '@'], true)) $value = "'".$value;
+            return $value;
+        }, $values);
+        fputcsv($stream, $safeValues, ';', '"', '\\');
     }
 
     public function exportReportsXlsx(Request $request)
@@ -500,6 +573,13 @@ class DashboardController extends Controller
             $value = trim((string) $request->query($field, 'All'));
             if ($value !== '' && $value !== 'All') $query->where($field, $value);
         }
+    }
+
+    private function applyReportEventFilters($query, Request $request): void
+    {
+        foreach (['employee_id', 'department', 'country'] as $field) { $value = trim((string) $request->query($field, 'All')); if ($value !== '' && $value !== 'All') $query->where($field, $value); }
+        $eventType = trim((string) $request->query('timeline_event_type', 'all')); if ($eventType !== '' && $eventType !== 'all') $query->where('event_type', $eventType);
+        $search = trim((string) $request->query('timeline_search', '')); if ($search !== '') $query->where(fn ($q) => $q->where('app', 'like', '%'.$search.'%')->orWhere('domain', 'like', '%'.$search.'%')->orWhere('title', 'like', '%'.$search.'%')->orWhere('employee_name', 'like', '%'.$search.'%'));
     }
 
     public function policies()

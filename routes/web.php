@@ -22,6 +22,7 @@ Route::middleware('worklive.web')->group(function () {
     Route::get('/reports', [DashboardController::class, 'reports'])->name('reports');
     Route::get('/reports/devices', [DashboardController::class, 'devices'])->name('reports.devices');
     Route::get('/reports/export', [DashboardController::class, 'exportReports'])->name('reports.export');
+    Route::get('/reports/export/timeline', [DashboardController::class, 'exportTimeline'])->name('reports.export.timeline');
     Route::get('/reports/export/xlsx', [DashboardController::class, 'exportReportsXlsx'])->name('reports.export.xlsx');
     Route::get('/reports/export/pdf', [DashboardController::class, 'exportReportsPdf'])->name('reports.export.pdf');
     Route::get('/policies', [DashboardController::class, 'policies'])->name('policies');

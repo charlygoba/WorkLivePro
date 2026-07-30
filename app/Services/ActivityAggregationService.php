@@ -85,6 +85,7 @@ class ActivityAggregationService
                     $duration = max(0, (int) $event->duration);
                     $active = $event->event_type === 'active' ? $duration : 0;
                     $idle = $event->event_type === 'idle' ? $duration : 0;
+                    $suspended = $event->event_type === 'suspended' ? $duration : 0;
                     $app = trim((string) ($event->app ?? '')) ?: 'Sin aplicación';
                     $domain = trim((string) ($event->domain ?? '')) ?: 'Sin dominio';
                     $activityTitle = trim((string) ($event->title ?? '')) ?: null;
@@ -94,24 +95,25 @@ class ActivityAggregationService
                     $this->addAggregate($buckets, $bucketKey, [
                         'bucket_key' => $bucketKey, 'company_id' => $run->company_id, 'employee_id' => $event->employee_id,
                         'bucket_start_utc' => $bucketStart, 'bucket_end_utc' => $bucketEnd, 'event_type' => $event->event_type,
-                        'app' => $app, 'domain' => $domain, 'activity_title' => $activityTitle, 'active_seconds' => $active, 'idle_seconds' => $idle,
+                        'app' => $app, 'domain' => $domain, 'activity_title' => $activityTitle, 'active_seconds' => $active, 'idle_seconds' => $idle, 'suspended_seconds' => $suspended,
                         'event_count' => 1, 'first_event_at' => $timestamp, 'last_event_at' => $timestamp, 'agent_id' => $event->agent_id,
                     ]);
                     $summaryDate = $timestamp->copy()->setTimezone($timezone)->toDateString();
                     $dailyKey = hash('sha256', implode('|', [$run->company_id, $event->employee_id, $summaryDate]));
                     $meta = $employeeMeta->get($event->employee_id);
                     if (! isset($daily[$dailyKey])) {
-                        $daily[$dailyKey] = ['id' => 'daily-'.substr($dailyKey, 0, 60), 'company_id' => $run->company_id, 'employee_id' => $event->employee_id, 'employee_name' => $event->employee_name ?: ($meta->name ?? $event->employee_id), 'department' => $event->department ?: ($meta->department ?? ''), 'country' => $meta->country ?? '', 'summary_date' => $summaryDate, 'total_active_seconds' => 0, 'total_idle_seconds' => 0, 'total_locked_seconds' => 0, 'first_activity' => $timestamp, 'last_activity' => $timestamp, 'top_apps' => json_encode([]), 'top_domains' => json_encode([])];
+                        $daily[$dailyKey] = ['id' => 'daily-'.substr($dailyKey, 0, 60), 'company_id' => $run->company_id, 'employee_id' => $event->employee_id, 'employee_name' => $event->employee_name ?: ($meta->name ?? $event->employee_id), 'department' => $event->department ?: ($meta->department ?? ''), 'country' => $meta->country ?? '', 'summary_date' => $summaryDate, 'total_active_seconds' => 0, 'total_idle_seconds' => 0, 'total_suspended_seconds' => 0, 'total_locked_seconds' => 0, 'first_activity' => $timestamp, 'last_activity' => $timestamp, 'top_apps' => json_encode([]), 'top_domains' => json_encode([])];
                     }
                     $daily[$dailyKey]['total_active_seconds'] += $active;
                     $daily[$dailyKey]['total_idle_seconds'] += $idle;
+                    $daily[$dailyKey]['total_suspended_seconds'] += $suspended;
                     $daily[$dailyKey]['total_locked_seconds'] += $event->event_type === 'locked' ? $duration : 0;
                     $daily[$dailyKey]['first_activity'] = $timestamp < $daily[$dailyKey]['first_activity'] ? $timestamp : $daily[$dailyKey]['first_activity'];
                     $daily[$dailyKey]['last_activity'] = $timestamp > $daily[$dailyKey]['last_activity'] ? $timestamp : $daily[$dailyKey]['last_activity'];
                     $appKey = hash('sha256', implode('|', [$run->company_id, $event->employee_id, $summaryDate, $app]));
-                    $this->addAggregate($apps, $appKey, ['summary_key' => $appKey, 'company_id' => $run->company_id, 'employee_id' => $event->employee_id, 'summary_date' => $summaryDate, 'app' => $app, 'active_seconds' => $active, 'idle_seconds' => $idle, 'event_count' => 1]);
+                    $this->addAggregate($apps, $appKey, ['summary_key' => $appKey, 'company_id' => $run->company_id, 'employee_id' => $event->employee_id, 'summary_date' => $summaryDate, 'app' => $app, 'active_seconds' => $active, 'idle_seconds' => $idle, 'suspended_seconds' => $suspended, 'event_count' => 1]);
                     $domainKey = hash('sha256', implode('|', [$run->company_id, $event->employee_id, $summaryDate, $domain]));
-                    $this->addAggregate($domains, $domainKey, ['summary_key' => $domainKey, 'company_id' => $run->company_id, 'employee_id' => $event->employee_id, 'summary_date' => $summaryDate, 'domain' => $domain, 'active_seconds' => $active, 'idle_seconds' => $idle, 'event_count' => 1]);
+                    $this->addAggregate($domains, $domainKey, ['summary_key' => $domainKey, 'company_id' => $run->company_id, 'employee_id' => $event->employee_id, 'summary_date' => $summaryDate, 'domain' => $domain, 'active_seconds' => $active, 'idle_seconds' => $idle, 'suspended_seconds' => $suspended, 'event_count' => 1]);
                 }
 
                 $this->mergeBuckets($buckets);
@@ -149,7 +151,7 @@ class ActivityAggregationService
     private function addAggregate(array &$target, string $key, array $row): void
     {
         if (! isset($target[$key])) { $target[$key] = $row; return; }
-        foreach (['active_seconds', 'idle_seconds', 'event_count'] as $field) $target[$key][$field] += $row[$field];
+        foreach (['active_seconds', 'idle_seconds', 'suspended_seconds', 'event_count'] as $field) $target[$key][$field] += $row[$field];
         if (array_key_exists('first_event_at', $row)) {
             $target[$key]['first_event_at'] = $row['first_event_at'] < $target[$key]['first_event_at'] ? $row['first_event_at'] : $target[$key]['first_event_at'];
             $target[$key]['last_event_at'] = $row['last_event_at'] > $target[$key]['last_event_at'] ? $row['last_event_at'] : $target[$key]['last_event_at'];
@@ -165,7 +167,7 @@ class ActivityAggregationService
             $existing = DB::table('activity_5m_buckets')->where('bucket_key', $row['bucket_key'])->first();
             if (! $existing) { DB::table('activity_5m_buckets')->insert($row + ['created_at' => now(), 'updated_at' => now()]); continue; }
             DB::table('activity_5m_buckets')->where('bucket_key', $row['bucket_key'])->update([
-                'active_seconds' => $existing->active_seconds + $row['active_seconds'], 'idle_seconds' => $existing->idle_seconds + $row['idle_seconds'],
+                'active_seconds' => $existing->active_seconds + $row['active_seconds'], 'idle_seconds' => $existing->idle_seconds + $row['idle_seconds'], 'suspended_seconds' => $existing->suspended_seconds + $row['suspended_seconds'],
                 'event_count' => $existing->event_count + $row['event_count'], 'first_event_at' => min($existing->first_event_at, (string) $row['first_event_at']),
                 'last_event_at' => max($existing->last_event_at, (string) $row['last_event_at']),
                 'activity_title' => $this->preferredActivityTitle($existing->activity_title, $row['activity_title'] ?? null), 'updated_at' => now(),
@@ -192,7 +194,7 @@ class ActivityAggregationService
         foreach ($rows as $row) {
             $existing = DB::table($table)->where('summary_key', $row['summary_key'])->first();
             if (! $existing) { DB::table($table)->insert($row + ['created_at' => now(), 'updated_at' => now()]); continue; }
-            DB::table($table)->where('summary_key', $row['summary_key'])->update(['active_seconds' => $existing->active_seconds + $row['active_seconds'], 'idle_seconds' => $existing->idle_seconds + $row['idle_seconds'], 'event_count' => $existing->event_count + $row['event_count'], 'updated_at' => now()]);
+            DB::table($table)->where('summary_key', $row['summary_key'])->update(['active_seconds' => $existing->active_seconds + $row['active_seconds'], 'idle_seconds' => $existing->idle_seconds + $row['idle_seconds'], 'suspended_seconds' => $existing->suspended_seconds + $row['suspended_seconds'], 'event_count' => $existing->event_count + $row['event_count'], 'updated_at' => now()]);
         }
     }
 
@@ -204,6 +206,7 @@ class ActivityAggregationService
             DB::table('daily_summaries')->where('id', $existing->id)->update([
                 'total_active_seconds' => $existing->total_active_seconds + $row['total_active_seconds'],
                 'total_idle_seconds' => $existing->total_idle_seconds + $row['total_idle_seconds'],
+                'total_suspended_seconds' => $existing->total_suspended_seconds + $row['total_suspended_seconds'],
                 'total_locked_seconds' => $existing->total_locked_seconds + $row['total_locked_seconds'],
                 'first_activity' => min($existing->first_activity, (string) $row['first_activity']),
                 'last_activity' => max($existing->last_activity, (string) $row['last_activity']),

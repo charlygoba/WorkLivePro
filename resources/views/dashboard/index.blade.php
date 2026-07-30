@@ -5,8 +5,8 @@
     $points=$hourly->values()->map(fn($item,$i)=>round(($i/10)*620).','.round(192-(($item['value']/$maxHourly)*150)))->implode(' ');
     $area='0,216 '.$points.' 620,216';
     $formatSeconds=fn($seconds)=>floor($seconds/3600).'h '.round(($seconds%3600)/60).'m';
-    $statusClass=fn($status)=>match($status){'active'=>'bg-emerald-500 text-white animate-pulse','online'=>'bg-emerald-400 text-white','idle'=>'bg-amber-400 text-slate-900','locked'=>'bg-indigo-500 text-white',default=>'bg-slate-300 text-slate-700'};
-    $statusLabel=fn($status)=>match($status){'active'=>'Activo (En Pantalla)','online'=>'Online (Disponible)','idle'=>'Inactivo (Ausente)','locked'=>'Bloqueado (Lock)',default=>'Desconectado'};
+    $statusClass=fn($status)=>match($status){'active'=>'bg-emerald-500 text-white animate-pulse','online'=>'bg-emerald-400 text-white','idle'=>'bg-amber-400 text-slate-900','suspended'=>'bg-slate-600 text-white','locked'=>'bg-indigo-500 text-white',default=>'bg-slate-300 text-slate-700'};
+    $statusLabel=fn($status)=>match($status){'active'=>'Activo (En Pantalla)','online'=>'Online (Disponible)','idle'=>'Inactivo (Ausente)','suspended'=>'Suspendido (Equipo apagado)','locked'=>'Bloqueado (Lock)',default=>'Desconectado'};
 @endphp
 <div class="flex bg-slate-100/45 text-slate-800 font-sans min-h-screen overflow-hidden">
 @include('partials.sidebar')

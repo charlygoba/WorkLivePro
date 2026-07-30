@@ -34,7 +34,7 @@
                 <div class="app-section-hero-metrics">
                     <div><i class="fa-solid fa-users" aria-hidden="true"></i><small>Colaboradores</small><b>{{ $metrics->employees }}</b></div>
                     <div class="reports-kpi-active"><i class="fa-solid fa-stopwatch" aria-hidden="true"></i><small>Tiempo activo</small><b>{{ $fmt($metrics->active) }}</b></div>
-                    <div class="reports-kpi-idle"><i class="fa-solid fa-hourglass-half" aria-hidden="true"></i><small>Tiempo inactivo</small><b>{{ $fmt($metrics->idle) }}</b></div>
+<div class="reports-kpi-idle"><i class="fa-solid fa-hourglass-half" aria-hidden="true"></i><small>Tiempo inactivo</small><b>{{ $fmt($metrics->idle) }}</b></div><div><i class="fa-solid fa-power-off" aria-hidden="true"></i><small>Suspendido</small><b>{{ $fmt($metrics->suspended) }}</b></div>
                     <div><i class="fa-solid fa-bolt" aria-hidden="true"></i><small>Productividad</small><b>{{ $metrics->productivity }}%</b></div>
                     <div><i class="fa-solid fa-shield-halved" aria-hidden="true"></i><small>Incidencias</small><b>{{ $metrics->incidents }}</b></div>
                 </div>

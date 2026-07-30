@@ -4,15 +4,15 @@
 @php
     $statusClass = fn ($status) => match ($status) {
         'active' => 'bg-emerald-500 text-white', 'online' => 'bg-emerald-100 text-emerald-700',
-        'idle' => 'bg-amber-100 text-amber-700', 'locked' => 'bg-indigo-100 text-indigo-700',
+        'idle' => 'bg-amber-100 text-amber-700', 'suspended' => 'bg-slate-100 text-slate-700', 'locked' => 'bg-indigo-100 text-indigo-700',
         default => 'bg-slate-100 text-slate-600',
     };
     $statusLabel = fn ($status) => match ($status) {
-        'active' => 'Activo (Live)', 'online' => 'Online (Disp)', 'idle' => 'Inactivo (Idle)',
+        'active' => 'Activo (Live)', 'online' => 'Online (Disp)', 'idle' => 'Inactivo (Idle)', 'suspended' => 'Suspendido',
         'locked' => 'Bloqueado', default => 'Offline',
     };
     $statusIcon = fn ($status) => match ($status) {
-        'active', 'online' => 'fa-solid fa-circle-check', 'idle' => 'fa-solid fa-mug-hot',
+        'active', 'online' => 'fa-solid fa-circle-check', 'idle' => 'fa-solid fa-mug-hot', 'suspended' => 'fa-solid fa-power-off',
         'locked' => 'fa-solid fa-lock', default => 'fa-solid fa-circle-minus',
     };
     $formatSeconds = fn ($seconds) => floor($seconds / 3600).'h '.round(($seconds % 3600) / 60).'m';

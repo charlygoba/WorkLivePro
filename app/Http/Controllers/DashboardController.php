@@ -33,7 +33,7 @@ class DashboardController extends Controller
 
         $activeSeconds = 0;
         $idleSeconds = 0;
-        $employeeTimes = $employees->mapWithKeys(fn ($employee) => [$employee->id => ['active' => 0, 'idle' => 0]])->all();
+        $employeeTimes = $employees->mapWithKeys(fn ($employee) => [$employee->id => ['active' => 0, 'idle' => 0, 'suspended' => 0]])->all();
         $hourlySeconds = array_fill_keys(range(8, 18), 0);
 
         foreach ($timeEvents as $event) {
@@ -48,7 +48,7 @@ class DashboardController extends Controller
             }
 
             $duration = max(0, (int) $event->duration);
-            if (! in_array($event->event_type, ['active', 'idle'], true)) {
+            if (! in_array($event->event_type, ['active', 'idle', 'suspended'], true)) {
                 continue;
             }
 
@@ -59,12 +59,13 @@ class DashboardController extends Controller
                 if (array_key_exists($hour, $hourlySeconds)) {
                     $hourlySeconds[$hour] += $duration;
                 }
-            } else {
+            } elseif ($event->event_type === 'idle') {
                 $idleSeconds += $duration;
             }
         }
 
-        $stats = ['total' => $employees->count(), 'active' => $employees->whereIn('status', ['online', 'active'])->count(), 'idle' => $employees->where('status', 'idle')->count(), 'locked' => $employees->where('status', 'locked')->count(), 'offline' => $employees->where('status', 'offline')->count(), 'activeSeconds' => $activeSeconds, 'idleSeconds' => $idleSeconds];
+        $suspendedSeconds = array_sum(array_column($employeeTimes, 'suspended'));
+        $stats = ['total' => $employees->count(), 'active' => $employees->whereIn('status', ['online', 'active'])->count(), 'idle' => $employees->where('status', 'idle')->count(), 'suspended' => $employees->where('status', 'suspended')->count(), 'locked' => $employees->where('status', 'locked')->count(), 'offline' => $employees->where('status', 'offline')->count(), 'activeSeconds' => $activeSeconds, 'idleSeconds' => $idleSeconds, 'suspendedSeconds' => $suspendedSeconds];
         $events = DB::table('activity_events')->where('company_id', $company)->orderByDesc('event_timestamp')->limit(12)->get()
             ->each(fn ($event) => $event->display_timestamp = Carbon::parse($event->event_timestamp, 'UTC')->setTimezone($corporateTimezone));
         $hourly = collect(range(8, 18))->map(fn ($hour) => ['label' => sprintf('%02d:00', $hour), 'value' => $hourlySeconds[$hour], 'sync' => 0]);
@@ -138,7 +139,7 @@ class DashboardController extends Controller
 
     public function storeEmployee(Request $request)
     {
-        $data = $request->validate(['name' => ['required', 'string', 'max:255'], 'department' => ['required', 'string', 'max:255'], 'country' => ['required', 'string', 'max:120'], 'timezone' => ['required', 'string', 'max:120'], 'status' => ['nullable','in:offline,online,active,idle,locked'], 'client_key' => ['nullable', 'string', 'max:120']]);
+        $data = $request->validate(['name' => ['required', 'string', 'max:255'], 'department' => ['required', 'string', 'max:255'], 'country' => ['required', 'string', 'max:120'], 'timezone' => ['required', 'string', 'max:120'], 'status' => ['nullable','in:offline,online,active,idle,suspended,locked'], 'client_key' => ['nullable', 'string', 'max:120']]);
         $requestedKey = Str::upper(trim((string) ($data['client_key'] ?? '')));
         $configuredPrefix = DB::table('company_settings')->where('company_id', config('worklive.company_id'))->value('client_key_prefix') ?: 'SAFEB';
         $configuredPrefix = substr(preg_replace('/[^A-Z0-9]/', '', strtoupper($configuredPrefix)), 0, 12) ?: 'SAFEB';
@@ -149,7 +150,7 @@ class DashboardController extends Controller
 
     public function updateEmployee(Request $request, string $id)
     {
-        $data = $request->validate(['name' => ['required','string','max:255'], 'department' => ['required','string','max:255'], 'country' => ['required','string','max:120'], 'timezone' => ['required','string','max:120'], 'status' => ['required','in:offline,online,active,idle,locked'], 'client_key' => ['nullable','string','max:120']]);
+        $data = $request->validate(['name' => ['required','string','max:255'], 'department' => ['required','string','max:255'], 'country' => ['required','string','max:120'], 'timezone' => ['required','string','max:120'], 'status' => ['required','in:offline,online,active,idle,suspended,locked'], 'client_key' => ['nullable','string','max:120']]);
         DB::table('employees')->where('company_id', config('worklive.company_id'))->where('id',$id)->update(['name'=>$data['name'],'department'=>$data['department'],'country'=>$data['country'],'timezone'=>$data['timezone'],'status'=>$data['status'],'client_key'=>$data['client_key'] ? Str::upper(trim($data['client_key'])) : null,'updated_at'=>now()]);
         return redirect()->route('employees.show',$id)->with('success','Empleado actualizado correctamente.');
     }
@@ -247,6 +248,7 @@ class DashboardController extends Controller
             ->whereBetween('event_timestamp', [$todayStart->copy()->utc(), $nowForEmployee->copy()->utc()])
             ->selectRaw("COALESCE(SUM(CASE WHEN event_type = 'active' THEN duration ELSE 0 END), 0) AS active_seconds")
             ->selectRaw("COALESCE(SUM(CASE WHEN event_type = 'idle' THEN duration ELSE 0 END), 0) AS idle_seconds")
+            ->selectRaw("COALESCE(SUM(CASE WHEN event_type = 'suspended' THEN duration ELSE 0 END), 0) AS suspended_seconds")
             ->selectRaw("COALESCE(SUM(CASE WHEN event_type = 'locked' THEN duration ELSE 0 END), 0) AS locked_seconds")
             ->first();
 
@@ -259,15 +261,18 @@ class DashboardController extends Controller
             ->whereBetween('event_timestamp', [$weekStart->copy()->utc(), $nowForEmployee->copy()->utc()])
             ->selectRaw("COALESCE(SUM(CASE WHEN event_type = 'active' THEN duration ELSE 0 END), 0) AS active_seconds")
             ->selectRaw("COALESCE(SUM(CASE WHEN event_type = 'idle' THEN duration ELSE 0 END), 0) AS idle_seconds")
+            ->selectRaw("COALESCE(SUM(CASE WHEN event_type = 'suspended' THEN duration ELSE 0 END), 0) AS suspended_seconds")
             ->selectRaw("COALESCE(SUM(CASE WHEN event_type = 'locked' THEN duration ELSE 0 END), 0) AS locked_seconds")
             ->first();
 
         $timeMetrics = [
             'todayActive' => (int) ($todayEvents->active_seconds ?? 0),
             'todayIdle' => (int) ($todayEvents->idle_seconds ?? 0),
+            'todaySuspended' => (int) ($todayEvents->suspended_seconds ?? 0),
             'todayLocked' => (int) ($todayEvents->locked_seconds ?? 0),
             'weekActive' => max((int) ($weekEvents->active_seconds ?? 0), (int) ($todayEvents->active_seconds ?? 0)),
             'weekIdle' => max((int) ($weekEvents->idle_seconds ?? 0), (int) ($todayEvents->idle_seconds ?? 0)),
+            'weekSuspended' => max((int) ($weekEvents->suspended_seconds ?? 0), (int) ($todayEvents->suspended_seconds ?? 0)),
             'weekLocked' => max((int) ($weekEvents->locked_seconds ?? 0), (int) ($todayEvents->locked_seconds ?? 0)),
         ];
         $timeMetrics += [
@@ -347,8 +352,8 @@ class DashboardController extends Controller
         $this->applyReportFilters($query, $request);
         $summaries = $query->orderByDesc('summary_date')->orderBy('employee_name')->get();
         $employeeRows = $summaries->groupBy('employee_id')->map(function ($items) {
-            $first = $items->first(); $active = (int) $items->sum('total_active_seconds'); $idle = (int) $items->sum('total_idle_seconds'); $locked = (int) $items->sum('total_locked_seconds');
-            return (object)['employee_id'=>$first->employee_id,'employee_name'=>$first->employee_name,'department'=>$first->department ?: '—','country'=>$first->country ?: '—','days'=>$items->count(),'active'=>$active,'idle'=>$idle,'locked'=>$locked,'productivity'=>$active + $idle > 0 ? (int) round(($active / ($active + $idle)) * 100) : 0,'first_activity'=>$items->pluck('first_activity')->filter()->min(),'last_activity'=>$items->pluck('last_activity')->filter()->max()];
+            $first = $items->first(); $active = (int) $items->sum('total_active_seconds'); $idle = (int) $items->sum('total_idle_seconds'); $suspended = (int) $items->sum('total_suspended_seconds'); $locked = (int) $items->sum('total_locked_seconds');
+            return (object)['employee_id'=>$first->employee_id,'employee_name'=>$first->employee_name,'department'=>$first->department ?: '—','country'=>$first->country ?: '—','days'=>$items->count(),'active'=>$active,'idle'=>$idle,'suspended'=>$suspended,'locked'=>$locked,'productivity'=>$active + $idle > 0 ? (int) round(($active / ($active + $idle)) * 100) : 0,'first_activity'=>$items->pluck('first_activity')->filter()->min(),'last_activity'=>$items->pluck('last_activity')->filter()->max()];
         })->values();
         $settings = DB::table('company_settings')->where('company_id', $company)->first();
         $workStart = (string) ($settings?->business_hours_start ?? '09:00');
@@ -378,7 +383,7 @@ class DashboardController extends Controller
         elseif ($hasDimensionFilter) $incidentQuery->whereRaw('1 = 0');
         $incidents = $incidentQuery->whereIn('event_type', ['locked', 'blocked', 'blocked-site'])->orderByDesc('event_timestamp')->limit(250)->get()
             ->each(fn ($event) => $event->display_timestamp = Carbon::parse($event->event_timestamp, 'UTC')->setTimezone($corporateTimezone));
-        $metrics = (object)['employees'=>$employeeRows->count(),'active'=>(int)$summaries->sum('total_active_seconds'),'idle'=>(int)$summaries->sum('total_idle_seconds'),'locked'=>(int)$summaries->sum('total_locked_seconds'),'incidents'=>$incidents->count()];
+        $metrics = (object)['employees'=>$employeeRows->count(),'active'=>(int)$summaries->sum('total_active_seconds'),'idle'=>(int)$summaries->sum('total_idle_seconds'),'suspended'=>(int)$summaries->sum('total_suspended_seconds'),'locked'=>(int)$summaries->sum('total_locked_seconds'),'incidents'=>$incidents->count()];
         $metrics->productivity = $metrics->active + $metrics->idle > 0 ? (int) round(($metrics->active / ($metrics->active + $metrics->idle)) * 100) : 0;
         $base = DB::table('daily_summaries')->where('company_id', $company);
         $employees = (clone $base)->select('employee_id','employee_name')->distinct()->orderBy('employee_name')->get();
@@ -386,8 +391,8 @@ class DashboardController extends Controller
         $countries = (clone $base)->whereNotNull('country')->distinct()->orderBy('country')->pluck('country');
         $attendanceMetrics = (object) ['punctual'=>$attendanceRows->sum('punctual_days'),'late'=>$attendanceRows->sum('late_days'),'early'=>$attendanceRows->sum('early_days'),'compliance'=>$attendanceRows->avg('compliance') ? (int) round($attendanceRows->avg('compliance')) : 0];
         $consolidatedIds = $summaries->pluck('employee_id')->unique()->values();
-        $consolidatedApps = DB::table('daily_app_summaries')->where('company_id', $company)->whereBetween('summary_date', [$from, $to])->when($consolidatedIds->isNotEmpty(), fn($q) => $q->whereIn('employee_id', $consolidatedIds))->when($consolidatedIds->isEmpty(), fn($q) => $q->whereRaw('1 = 0'))->select('app', DB::raw('SUM(active_seconds + idle_seconds) AS seconds'), DB::raw('SUM(event_count) AS events'))->groupBy('app')->orderByDesc('seconds')->limit(12)->get();
-        $consolidatedDomains = DB::table('daily_domain_summaries')->where('company_id', $company)->whereBetween('summary_date', [$from, $to])->when($consolidatedIds->isNotEmpty(), fn($q) => $q->whereIn('employee_id', $consolidatedIds))->when($consolidatedIds->isEmpty(), fn($q) => $q->whereRaw('1 = 0'))->select('domain', DB::raw('SUM(active_seconds + idle_seconds) AS seconds'), DB::raw('SUM(event_count) AS events'))->groupBy('domain')->orderByDesc('seconds')->limit(12)->get();
+        $consolidatedApps = DB::table('daily_app_summaries')->where('company_id', $company)->whereBetween('summary_date', [$from, $to])->when($consolidatedIds->isNotEmpty(), fn($q) => $q->whereIn('employee_id', $consolidatedIds))->when($consolidatedIds->isEmpty(), fn($q) => $q->whereRaw('1 = 0'))->select('app', DB::raw('SUM(active_seconds + idle_seconds) AS seconds'), DB::raw('SUM(suspended_seconds) AS suspended_seconds'), DB::raw('SUM(event_count) AS events'))->groupBy('app')->orderByDesc('seconds')->limit(12)->get();
+        $consolidatedDomains = DB::table('daily_domain_summaries')->where('company_id', $company)->whereBetween('summary_date', [$from, $to])->when($consolidatedIds->isNotEmpty(), fn($q) => $q->whereIn('employee_id', $consolidatedIds))->when($consolidatedIds->isEmpty(), fn($q) => $q->whereRaw('1 = 0'))->select('domain', DB::raw('SUM(active_seconds + idle_seconds) AS seconds'), DB::raw('SUM(suspended_seconds) AS suspended_seconds'), DB::raw('SUM(event_count) AS events'))->groupBy('domain')->orderByDesc('seconds')->limit(12)->get();
         $consolidatedBuckets = DB::table('activity_5m_buckets')->where('company_id', $company)->whereBetween('bucket_start_utc', [Carbon::parse($from, $corporateTimezone)->startOfDay()->utc(), Carbon::parse($to, $corporateTimezone)->endOfDay()->utc()])->when($consolidatedIds->isNotEmpty(), fn($q) => $q->whereIn('employee_id', $consolidatedIds))->count();
         $rawFrom = Carbon::parse($from, $corporateTimezone)->startOfDay()->utc();
         $rawTo = Carbon::parse($to, $corporateTimezone)->endOfDay()->utc();
@@ -693,7 +698,7 @@ class DashboardController extends Controller
             $startup=$ordered->firstWhere('event_type','startup'); $shutdown=$ordered->where('event_type','shutdown')->last(); $first=$summary?->first_activity ?: $ordered->first()?->event_timestamp; $last=$summary?->last_activity ?: $ordered->last()?->event_timestamp; $start=$startup?->event_timestamp ?: $first; $end=$shutdown?->event_timestamp ?: $last;
             $startDisplay = $start ? Carbon::parse($start, 'UTC')->setTimezone($corporateTimezone) : null; $endDisplay = $end ? Carbon::parse($end, 'UTC')->setTimezone($corporateTimezone) : null;
             $late = self::minutesLate($startDisplay?->format('Y-m-d H:i:s'),$date,$settings?->business_hours_start ?: '08:00',(int)($settings?->late_arrival_grace_minutes ?? 10)); $early = self::minutesEarly($endDisplay?->format('Y-m-d H:i:s'),$date,$settings?->business_hours_end ?: '18:00',(int)($settings?->early_departure_grace_minutes ?? 10));
-            return (object)['employee_id'=>$id,'date'=>$date,'employee_name'=>$summary?->employee_name ?: $employee?->name ?: $id,'department'=>$summary?->department ?: $employee?->department ?: '—','startup'=>$start,'shutdown'=>$end,'startup_display'=>$startDisplay,'shutdown_display'=>$endDisplay,'startup_source'=>$startup ? 'startup' : ($first ? 'activity' : 'none'),'shutdown_source'=>$shutdown ? 'shutdown' : ($last ? 'activity' : 'none'),'active_seconds'=>(int)$ordered->where('event_type','active')->sum('duration'),'idle_seconds'=>(int)$ordered->where('event_type','idle')->sum('duration'),'locked_seconds'=>(int)$ordered->where('event_type','locked')->sum('duration'),'blocked_attempts'=>$ordered->filter(fn($e)=>str_contains(strtolower(($e->event_type.' '.$e->app.' '.$e->title.' '.$e->domain)), 'block'))->count(),'late_minutes'=>$late,'early_minutes'=>$early];
+            return (object)['employee_id'=>$id,'date'=>$date,'employee_name'=>$summary?->employee_name ?: $employee?->name ?: $id,'department'=>$summary?->department ?: $employee?->department ?: '—','startup'=>$start,'shutdown'=>$end,'startup_display'=>$startDisplay,'shutdown_display'=>$endDisplay,'startup_source'=>$startup ? 'startup' : ($first ? 'activity' : 'none'),'shutdown_source'=>$shutdown ? 'shutdown' : ($last ? 'activity' : 'none'),'active_seconds'=>(int)$ordered->where('event_type','active')->sum('duration'),'idle_seconds'=>(int)$ordered->where('event_type','idle')->sum('duration'),'suspended_seconds'=>(int)$ordered->where('event_type','suspended')->sum('duration'),'locked_seconds'=>(int)$ordered->where('event_type','locked')->sum('duration'),'blocked_attempts'=>$ordered->filter(fn($e)=>str_contains(strtolower(($e->event_type.' '.$e->app.' '.$e->title.' '.$e->domain)), 'block'))->count(),'late_minutes'=>$late,'early_minutes'=>$early];
         })->sortByDesc(fn($r)=>$r->date)->values();
         return view('time-clock.index', compact('rows','employees','departments','department','from','to','employeeId','settings','corporateTimezone','workStart','workEnd','timeClockBeforeHours','timeClockAfterHours'));
     }
@@ -725,7 +730,7 @@ class DashboardController extends Controller
         $corporateTimezone = $this->corporateTimezone();
         $request->merge(['date_from'=>$request->query('date_from', now($corporateTimezone)->toDateString()), 'date_to'=>$request->query('date_to', now($corporateTimezone)->toDateString())]);
         $response = $this->timeClock($request); abort_unless($response instanceof \Illuminate\View\View, 500); $rows = $response->getData()['rows'];
-        return response()->streamDownload(function() use($rows) { $out=fopen('php://output','w'); fputcsv($out,['Fecha','Empleado','Departamento','Encendido','Apagado','Activo','Inactivo','Bloqueado','Intentos Bloqueados','Retardo Min','Salida Temprana Min']); foreach($rows as $row) fputcsv($out,[$row->date,$row->employee_name,$row->department,$row->startup_display?->format('H:i:s') ?: '—',$row->shutdown_display?->format('H:i:s') ?: '—',gmdate('H:i:s',(int)$row->active_seconds),gmdate('H:i:s',(int)$row->idle_seconds),gmdate('H:i:s',(int)$row->locked_seconds),$row->blocked_attempts,$row->late_minutes,$row->early_minutes]); fclose($out); }, 'reloj-checador-rh-'.now($corporateTimezone)->format('Y-m-d').'.csv', ['Content-Type' => 'text/csv; charset=UTF-8']);
+        return response()->streamDownload(function() use($rows) { $out=fopen('php://output','w'); fwrite($out, "\xEF\xBB\xBF"); fputcsv($out,['Fecha','Empleado','Departamento','Encendido','Apagado','Activo','Inactivo real','Suspendido','Bloqueado','Intentos Bloqueados','Retardo Min','Salida Temprana Min'],';'); foreach($rows as $row) fputcsv($out,[$row->date,$row->employee_name,$row->department,$row->startup_display?->format('H:i:s') ?: '—',$row->shutdown_display?->format('H:i:s') ?: '—',gmdate('H:i:s',(int)$row->active_seconds),gmdate('H:i:s',(int)$row->idle_seconds),gmdate('H:i:s',(int)$row->suspended_seconds),gmdate('H:i:s',(int)$row->locked_seconds),$row->blocked_attempts,$row->late_minutes,$row->early_minutes],';'); fclose($out); }, 'reloj-checador-rh-'.now($corporateTimezone)->format('Y-m-d').'.csv', ['Content-Type' => 'text/csv; charset=UTF-8']);
     }
 
     public function settings()

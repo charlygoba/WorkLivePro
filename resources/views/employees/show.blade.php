@@ -4,8 +4,8 @@
  $tab=request('tab','overview');
  if (!class_exists('CarbonCarbon')) class_alias('Carbon\\Carbon', 'CarbonCarbon');
  $fmt=function($seconds) { $seconds=max(0,(int)$seconds); $hours=intdiv($seconds,3600); $minutes=intdiv($seconds%3600,60); $remaining=$seconds%60; if($hours) return $hours.'h '.str_pad((string)$minutes,2,'0',STR_PAD_LEFT).'m'; if($minutes) return $minutes.'m '.str_pad((string)$remaining,2,'0',STR_PAD_LEFT).'s'; return $remaining.'s'; };
- $statusClass=match($employee->status){'active'=>'bg-emerald-500 text-white animate-pulse','online'=>'bg-emerald-400 text-white','idle'=>'bg-amber-400 text-slate-900','locked'=>'bg-indigo-500 text-white',default=>'bg-slate-300 text-slate-700'};
- $statusLabel=match($employee->status){'active'=>'Activo (En Pantalla)','online'=>'Online (Disponible)','idle'=>'Inactivo (Ausente)','locked'=>'Bloqueado (Suspendido)',default=>'Offline'};
+ $statusClass=match($employee->status){'active'=>'bg-emerald-500 text-white animate-pulse','online'=>'bg-emerald-400 text-white','idle'=>'bg-amber-400 text-slate-900','suspended'=>'bg-slate-600 text-white','locked'=>'bg-indigo-500 text-white',default=>'bg-slate-300 text-slate-700'};
+ $statusLabel=match($employee->status){'active'=>'Activo (En Pantalla)','online'=>'Online (Disponible)','idle'=>'Inactivo (Ausente)','suspended'=>'Suspendido (Equipo apagado)','locked'=>'Bloqueado (Suspendido)',default=>'Offline'};
  $history=$summaries->take(7)->reverse()->values();$max=max(1,$history->flatMap(fn($s)=>[$s->total_active_seconds,$s->total_idle_seconds])->max());$count=max(1,$history->count()-1);
  $line=fn($field)=>$history->map(fn($s,$i)=>round(($i/$count)*900).','.round(218-($s->{$field}/$max*170)))->join(' ');
  $appMax=max(1,$appTotals->max() ?: 1); $domainMax=max(1,$domainTotals->max() ?: 1);
@@ -152,6 +152,7 @@
         'active' => 'bg-emerald-50 text-emerald-700 ring-emerald-100',
         'idle' => 'bg-amber-50 text-amber-700 ring-amber-100',
         'locked' => 'bg-violet-50 text-violet-700 ring-violet-100',
+        'suspended' => 'bg-slate-100 text-slate-700 ring-slate-200',
         'blocked', 'blocked-site' => 'bg-rose-50 text-rose-700 ring-rose-100',
         default => 'bg-slate-100 text-slate-600 ring-slate-200',
     };

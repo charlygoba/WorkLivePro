@@ -659,25 +659,43 @@ class DashboardController extends Controller
         $employees = DB::table('employees')->where('company_id',$company)->orderBy('name')->get(['id','name','department']);
         $departments = $employees->pluck('department')->filter()->unique()->sort()->values();
         $departmentEmployeeIds = $department === 'All' ? null : $employees->where('department', $department)->pluck('id')->values();
+        $settings = DB::table('company_settings')->where('company_id',$company)->first();
+        $workStart = (string) ($settings?->business_hours_start ?: '08:00');
+        $workEnd = (string) ($settings?->business_hours_end ?: '18:00');
+        $timeClockBeforeHours = max(0, min(4, (int) ($settings?->time_clock_before_hours ?? 1)));
+        $timeClockAfterHours = max(0, min(4, (int) ($settings?->time_clock_after_hours ?? 2)));
         $summaries = DB::table('daily_summaries')->where('company_id',$company)->whereBetween('summary_date',[$from,$to])
             ->when($employeeId !== 'All', fn($q) => $q->where('employee_id',$employeeId))
             ->when($departmentEmployeeIds !== null, fn($q) => $q->whereIn('employee_id', $departmentEmployeeIds))->get();
+        $windowRanges = [];
+        for ($date = Carbon::parse($from, $corporateTimezone); $date->lte(Carbon::parse($to, $corporateTimezone)); $date->addDay()) {
+            $windowRanges[] = [
+                $date->copy()->setTimeFromTimeString($workStart)->subHours($timeClockBeforeHours)->utc(),
+                $date->copy()->setTimeFromTimeString($workEnd)->addHours($timeClockAfterHours)->utc(),
+            ];
+        }
         $rawFrom = Carbon::parse($from, $corporateTimezone)->startOfDay()->utc()->max(Carbon::now('UTC')->subDays(30));
-        $events = DB::table('activity_events')->where('company_id',$company)->whereBetween('event_timestamp',[$rawFrom, Carbon::parse($to, $corporateTimezone)->endOfDay()->utc()])
+        $rawTo = Carbon::parse($to, $corporateTimezone)->endOfDay()->utc();
+        $events = DB::table('activity_events')->where('company_id',$company)->whereBetween('event_timestamp',[$rawFrom, $rawTo])
+            ->where(function ($query) use ($windowRanges, $rawFrom, $rawTo) {
+                foreach ($windowRanges as [$windowFrom, $windowTo]) {
+                    $windowFrom = $windowFrom->max($rawFrom); $windowTo = $windowTo->min($rawTo);
+                    if ($windowFrom->lte($windowTo)) $query->orWhereBetween('event_timestamp', [$windowFrom, $windowTo]);
+                }
+            })
             ->when($employeeId !== 'All', fn($q) => $q->where('employee_id',$employeeId))
             ->when($departmentEmployeeIds !== null, fn($q) => $q->whereIn('employee_id', $departmentEmployeeIds))->orderBy('event_timestamp')->get();
-        $settings = DB::table('company_settings')->where('company_id',$company)->first();
         $summaryMap = $summaries->keyBy(fn($s) => $s->employee_id.'__'.$s->summary_date);
         $eventGroups = $events->groupBy(fn($e) => $e->employee_id.'__'.Carbon::parse($e->event_timestamp, 'UTC')->setTimezone($corporateTimezone)->toDateString());
-        $keys = $summaryMap->keys()->merge($eventGroups->keys())->unique();
+        $keys = $eventGroups->keys();
         $rows = $keys->map(function($key) use ($summaryMap,$eventGroups,$employees,$settings,$corporateTimezone) {
             [$id,$date] = explode('__',$key,2); $summary=$summaryMap->get($key); $group=$eventGroups->get($key,collect()); $employee=$employees->firstWhere('id',$id); $ordered=$group->sortBy('event_timestamp')->values();
             $startup=$ordered->firstWhere('event_type','startup'); $shutdown=$ordered->where('event_type','shutdown')->last(); $first=$summary?->first_activity ?: $ordered->first()?->event_timestamp; $last=$summary?->last_activity ?: $ordered->last()?->event_timestamp; $start=$startup?->event_timestamp ?: $first; $end=$shutdown?->event_timestamp ?: $last;
             $startDisplay = $start ? Carbon::parse($start, 'UTC')->setTimezone($corporateTimezone) : null; $endDisplay = $end ? Carbon::parse($end, 'UTC')->setTimezone($corporateTimezone) : null;
             $late = self::minutesLate($startDisplay?->format('Y-m-d H:i:s'),$date,$settings?->business_hours_start ?: '08:00',(int)($settings?->late_arrival_grace_minutes ?? 10)); $early = self::minutesEarly($endDisplay?->format('Y-m-d H:i:s'),$date,$settings?->business_hours_end ?: '18:00',(int)($settings?->early_departure_grace_minutes ?? 10));
-            return (object)['employee_id'=>$id,'date'=>$date,'employee_name'=>$summary?->employee_name ?: $employee?->name ?: $id,'department'=>$summary?->department ?: $employee?->department ?: '—','startup'=>$start,'shutdown'=>$end,'startup_display'=>$startDisplay,'shutdown_display'=>$endDisplay,'startup_source'=>$startup ? 'startup' : ($first ? 'activity' : 'none'),'shutdown_source'=>$shutdown ? 'shutdown' : ($last ? 'activity' : 'none'),'active_seconds'=>$summary?->total_active_seconds ?: $ordered->where('event_type','active')->sum('duration'),'idle_seconds'=>$summary?->total_idle_seconds ?: $ordered->where('event_type','idle')->sum('duration'),'locked_seconds'=>$summary?->total_locked_seconds ?: $ordered->where('event_type','locked')->sum('duration'),'blocked_attempts'=>$ordered->filter(fn($e)=>str_contains(strtolower(($e->event_type.' '.$e->app.' '.$e->title.' '.$e->domain)), 'block'))->count(),'late_minutes'=>$late,'early_minutes'=>$early];
+            return (object)['employee_id'=>$id,'date'=>$date,'employee_name'=>$summary?->employee_name ?: $employee?->name ?: $id,'department'=>$summary?->department ?: $employee?->department ?: '—','startup'=>$start,'shutdown'=>$end,'startup_display'=>$startDisplay,'shutdown_display'=>$endDisplay,'startup_source'=>$startup ? 'startup' : ($first ? 'activity' : 'none'),'shutdown_source'=>$shutdown ? 'shutdown' : ($last ? 'activity' : 'none'),'active_seconds'=>(int)$ordered->where('event_type','active')->sum('duration'),'idle_seconds'=>(int)$ordered->where('event_type','idle')->sum('duration'),'locked_seconds'=>(int)$ordered->where('event_type','locked')->sum('duration'),'blocked_attempts'=>$ordered->filter(fn($e)=>str_contains(strtolower(($e->event_type.' '.$e->app.' '.$e->title.' '.$e->domain)), 'block'))->count(),'late_minutes'=>$late,'early_minutes'=>$early];
         })->sortByDesc(fn($r)=>$r->date)->values();
-        return view('time-clock.index', compact('rows','employees','departments','department','from','to','employeeId','settings','corporateTimezone'));
+        return view('time-clock.index', compact('rows','employees','departments','department','from','to','employeeId','settings','corporateTimezone','workStart','workEnd','timeClockBeforeHours','timeClockAfterHours'));
     }
 
     private static function minutesLate(?string $value, string $date, string $time, int $grace): int { if (!$value) return 0; $threshold=strtotime($date.' '.$time.' +'.$grace.' minutes'); return max(0,(int)ceil((strtotime($value)-$threshold)/60)); }
@@ -763,8 +781,8 @@ class DashboardController extends Controller
 
     public function saveSettings(Request $request)
     {
-        $data = $request->validate(['company_name'=>['required','string','max:255'],'timezone'=>['required','timezone'],'business_hours_start'=>['required','date_format:H:i'],'business_hours_end'=>['required','date_format:H:i'],'client_key_prefix'=>['required','string','max:12'],'agent_sample_interval_seconds'=>['required','integer','min:5','max:3600'],'agent_batch_interval_seconds'=>['required','integer','min:30','max:86400'],'agent_poll_interval_seconds'=>['required','integer','min:10','max:3600'],'late_arrival_grace_minutes'=>['required','integer','min:0','max:240'],'early_departure_grace_minutes'=>['required','integer','min:0','max:240'],'productive_apps_list'=>['nullable','string'],'unproductive_apps_list'=>['nullable','string'],'productive_domains_list'=>['nullable','string'],'unproductive_domains_list'=>['nullable','string'],'update_feed_url'=>['nullable','url','max:2000'],'app_password'=>['nullable','string','min:8','max:255']]);
-        $values = ['company_name'=>$data['company_name'],'timezone'=>$data['timezone'],'business_hours_start'=>$data['business_hours_start'],'business_hours_end'=>$data['business_hours_end'],'client_key_prefix'=>Str::upper($data['client_key_prefix']),'agent_sample_interval_seconds'=>$data['agent_sample_interval_seconds'],'agent_batch_interval_seconds'=>$data['agent_batch_interval_seconds'],'agent_poll_interval_seconds'=>$data['agent_poll_interval_seconds'],'late_arrival_grace_minutes'=>$data['late_arrival_grace_minutes'],'early_departure_grace_minutes'=>$data['early_departure_grace_minutes'],'productive_apps_list'=>$data['productive_apps_list'] ?? '','unproductive_apps_list'=>$data['unproductive_apps_list'] ?? '','productive_domains_list'=>$data['productive_domains_list'] ?? '','unproductive_domains_list'=>$data['unproductive_domains_list'] ?? '','block_websites_enabled'=>$request->boolean('block_websites_enabled'),'policy_revision'=>(int) floor(microtime(true) * 1000),'update_feed_url'=>$data['update_feed_url'] ?? null,'updated_at'=>now()];
+        $data = $request->validate(['company_name'=>['required','string','max:255'],'timezone'=>['required','timezone'],'business_hours_start'=>['required','date_format:H:i'],'business_hours_end'=>['required','date_format:H:i'],'time_clock_before_hours'=>['required','integer','min:0','max:4'],'time_clock_after_hours'=>['required','integer','min:0','max:4'],'client_key_prefix'=>['required','string','max:12'],'agent_sample_interval_seconds'=>['required','integer','min:5','max:3600'],'agent_batch_interval_seconds'=>['required','integer','min:30','max:86400'],'agent_poll_interval_seconds'=>['required','integer','min:10','max:3600'],'late_arrival_grace_minutes'=>['required','integer','min:0','max:240'],'early_departure_grace_minutes'=>['required','integer','min:0','max:240'],'productive_apps_list'=>['nullable','string'],'unproductive_apps_list'=>['nullable','string'],'productive_domains_list'=>['nullable','string'],'unproductive_domains_list'=>['nullable','string'],'update_feed_url'=>['nullable','url','max:2000'],'app_password'=>['nullable','string','min:8','max:255']]);
+        $values = ['company_name'=>$data['company_name'],'timezone'=>$data['timezone'],'business_hours_start'=>$data['business_hours_start'],'business_hours_end'=>$data['business_hours_end'],'time_clock_before_hours'=>$data['time_clock_before_hours'],'time_clock_after_hours'=>$data['time_clock_after_hours'],'client_key_prefix'=>Str::upper($data['client_key_prefix']),'agent_sample_interval_seconds'=>$data['agent_sample_interval_seconds'],'agent_batch_interval_seconds'=>$data['agent_batch_interval_seconds'],'agent_poll_interval_seconds'=>$data['agent_poll_interval_seconds'],'late_arrival_grace_minutes'=>$data['late_arrival_grace_minutes'],'early_departure_grace_minutes'=>$data['early_departure_grace_minutes'],'productive_apps_list'=>$data['productive_apps_list'] ?? '','unproductive_apps_list'=>$data['unproductive_apps_list'] ?? '','productive_domains_list'=>$data['productive_domains_list'] ?? '','unproductive_domains_list'=>$data['unproductive_domains_list'] ?? '','block_websites_enabled'=>$request->boolean('block_websites_enabled'),'policy_revision'=>(int) floor(microtime(true) * 1000),'update_feed_url'=>$data['update_feed_url'] ?? null,'updated_at'=>now()];
         if (!empty($data['app_password'])) $values['app_password_hash'] = password_hash($data['app_password'], PASSWORD_BCRYPT);
         DB::table('company_settings')->where('company_id', config('worklive.company_id'))->update($values);
         return redirect()->route('settings')->with('success', 'Configuración guardada correctamente.');

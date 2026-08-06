@@ -6,8 +6,11 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
+use Illuminate\Support\Collection;
+use Illuminate\Validation\ValidationException;
 use Carbon\Carbon;
 use Dompdf\Dompdf;
+use setasign\Fpdi\Fpdi;
 use PhpOffice\PhpSpreadsheet\Spreadsheet;
 use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
 use App\Services\ActivityAggregationService;
@@ -207,19 +210,16 @@ class DashboardController extends Controller
         $corporateTimezone = $this->corporateTimezone($company);
         $employee = DB::table('employees')->where('company_id', $company)->where('id', $id)->firstOrFail();
         $tab = (string) $request->query('tab', 'overview');
-        $eventQuery = DB::table('activity_events')->where('company_id', $company)->where('employee_id', $id);
         // El detalle crudo es una ventana de auditoría de 30 días. El histórico
         // se consulta mediante summaries/buckets para no cargar años en memoria.
-        $eventQuery->where('event_timestamp', '>=', Carbon::now('UTC')->subDays(30));
-        if ($request->filled('date_from')) $eventQuery->where('event_timestamp','>=',Carbon::parse($request->string('date_from'), $corporateTimezone)->startOfDay()->utc());
-        if ($request->filled('date_to')) $eventQuery->where('event_timestamp','<=',Carbon::parse($request->string('date_to'), $corporateTimezone)->endOfDay()->utc());
+        $eventFrom = (string) $request->query('date_from', Carbon::now($corporateTimezone)->subDays(29)->toDateString());
+        $eventTo = (string) $request->query('date_to', Carbon::now($corporateTimezone)->toDateString());
+        if ($eventFrom > $eventTo) [$eventFrom, $eventTo] = [$eventTo, $eventFrom];
+        $eventQuery = $this->timelineEventQuery($request, $corporateTimezone, $eventFrom, $eventTo, $id)
+            ->where('event_timestamp', '>=', Carbon::now('UTC')->subDays(30));
         if ($request->filled('app')) $eventQuery->where('app','like','%'.$request->string('app').'%');
         if ($request->filled('domain')) $eventQuery->where('domain','like','%'.$request->string('domain').'%');
-        $eventType = (string) $request->query('event_type', 'all');
-        if ($eventType !== '' && $eventType !== 'all') $eventQuery->where('event_type', $eventType);
         if ($request->boolean('blocked_only')) $eventQuery->whereIn('event_type',['blocked','blocked-site']);
-        $eventSearch = trim((string) $request->query('event_search',''));
-        if ($eventSearch !== '') $eventQuery->where(fn ($q) => $q->where('app','like','%'.$eventSearch.'%')->orWhere('title','like','%'.$eventSearch.'%')->orWhere('domain','like','%'.$eventSearch.'%'));
         $eventDurationTotal = (int) ((clone $eventQuery)->sum('duration') ?? 0);
         $eventsPaginator = null;
         if ($tab === 'events') {
@@ -331,7 +331,9 @@ class DashboardController extends Controller
         };
         $bucketDirection = $request->query('bucket_direction', 'desc') === 'asc' ? 'asc' : 'desc';
         $consolidatedBuckets = $bucketQuery->orderBy($bucketSortColumn, $bucketDirection)->limit(1000)->get()->each(fn($bucket) => $bucket->display_start = Carbon::parse($bucket->bucket_start_utc, 'UTC')->setTimezone($corporateTimezone));
-        return view('employees.show', compact('employee', 'events', 'eventsPaginator', 'eventTotal', 'eventDurationTotal', 'timeMetrics', 'summaries', 'devices', 'appTotals', 'domainTotals', 'corporateTimezone', 'consolidatedDays', 'consolidatedBuckets', 'bucketDateFrom', 'bucketDateTo'));
+        $timelineTimeFrom = trim((string) $request->query('time_from', ''));
+        $timelineTimeTo = trim((string) $request->query('time_to', ''));
+        return view('employees.show', compact('employee', 'events', 'eventsPaginator', 'eventTotal', 'eventDurationTotal', 'timeMetrics', 'summaries', 'devices', 'appTotals', 'domainTotals', 'corporateTimezone', 'consolidatedDays', 'consolidatedBuckets', 'bucketDateFrom', 'bucketDateTo', 'timelineTimeFrom', 'timelineTimeTo'));
     }
 
     public function updateDevice(Request $request, string $employeeId, string $deviceId)
@@ -424,17 +426,25 @@ class DashboardController extends Controller
         $technicalDays = Carbon::parse($from, $corporateTimezone)->diffInDays(Carbon::parse($to, $corporateTimezone)) + 1;
         $technicalMetrics = (object)['events'=>$technicalEvents->count(),'employees'=>$technicalRows->count(),'agents'=>$technicalEvents->pluck('agent_id')->filter()->unique()->count(),'buckets'=>$consolidatedBuckets,'days'=>$technicalDays,'summaries'=>$summaries->count(),'devices'=>$technicalDevices->count(),'live'=>(int)$technicalDeviceStatus->get('live',0),'stale'=>(int)$technicalDeviceStatus->get('stale',0)];
         $technicalMetrics->coverage = $technicalMetrics->employees && $technicalDays ? min(100, (int)round(($technicalMetrics->summaries / ($technicalMetrics->employees * $technicalDays)) * 100)) : 0;
-        $timelineQuery = clone $technicalQuery;
+        $timelineQuery = $this->timelineEventQuery($request, $corporateTimezone, $from, $to);
         $timelineEventType = trim((string) $request->query('timeline_event_type', 'all'));
         $timelineSearch = trim((string) $request->query('timeline_search', ''));
-        if ($timelineEventType !== '' && $timelineEventType !== 'all') $timelineQuery->where('event_type', $timelineEventType);
-        if ($timelineSearch !== '') $timelineQuery->where(fn ($q) => $q->where('app', 'like', '%'.$timelineSearch.'%')->orWhere('domain', 'like', '%'.$timelineSearch.'%')->orWhere('title', 'like', '%'.$timelineSearch.'%')->orWhere('employee_name', 'like', '%'.$timelineSearch.'%'));
         $timelinePerPage = in_array((int) $request->query('timeline_per_page', 100), [50, 100, 250, 500], true) ? (int) $request->query('timeline_per_page', 100) : 100;
         $timelineEvents = $timelineQuery->orderByDesc('event_timestamp')->paginate($timelinePerPage, ['*'], 'timeline_page')->withQueryString();
         $timelineEvents->getCollection()->each(fn ($event) => $event->display_timestamp = Carbon::parse($event->event_timestamp, 'UTC')->setTimezone($corporateTimezone));
         $timelineEventTypes = $technicalEvents->pluck('event_type')->filter()->unique()->sort()->values();
         $timelineTotalDuration = (int) (clone $timelineQuery)->sum('duration');
-        return view('reports.index', compact('summaries', 'employeeRows', 'attendanceRows', 'attendanceMetrics', 'incidents', 'metrics', 'employees', 'departments', 'countries', 'corporateTimezone', 'from', 'to', 'tab', 'workStart', 'workEnd', 'lateGrace', 'earlyGrace', 'consolidatedApps', 'consolidatedDomains', 'consolidatedBuckets', 'technicalRows', 'technicalEventTypes', 'technicalMetrics', 'technicalDetailMode', 'technicalGroupBy', 'technicalSearch', 'technicalEventType', 'technicalEventTypesFilter', 'technicalDetailRows', 'timelineEvents', 'timelineEventType', 'timelineSearch', 'timelinePerPage', 'timelineEventTypes', 'timelineTotalDuration'));
+        $reportEmployees = DB::table('employees')->where('company_id', $company)->orderBy('name')->get(['id', 'name', 'department']);
+        $reportSelectedIds = $this->reportEmployeeIds($request, $company) ?? [];
+        $reportAll = $this->reportEmployeeIds($request, $company) === null;
+        // Alias de compatibilidad para la plantilla antigua del Timeline; el
+        // selector visible ahora vive en los filtros generales del reporte.
+        $timelineEmployees = $reportEmployees;
+        $timelineSelectedIds = $reportSelectedIds;
+        $timelineAll = $reportAll;
+        $timeFrom = trim((string) $request->query('time_from', ''));
+        $timeTo = trim((string) $request->query('time_to', ''));
+        return view('reports.index', compact('summaries', 'employeeRows', 'attendanceRows', 'attendanceMetrics', 'incidents', 'metrics', 'employees', 'departments', 'countries', 'corporateTimezone', 'from', 'to', 'tab', 'workStart', 'workEnd', 'lateGrace', 'earlyGrace', 'consolidatedApps', 'consolidatedDomains', 'consolidatedBuckets', 'technicalRows', 'technicalEventTypes', 'technicalMetrics', 'technicalDetailMode', 'technicalGroupBy', 'technicalSearch', 'technicalEventType', 'technicalEventTypesFilter', 'technicalDetailRows', 'timelineEvents', 'timelineEventType', 'timelineSearch', 'timelinePerPage', 'timelineEventTypes', 'timelineTotalDuration', 'reportEmployees', 'reportSelectedIds', 'reportAll', 'timelineEmployees', 'timelineSelectedIds', 'timelineAll', 'timeFrom', 'timeTo'));
     }
 
     public function devices(Request $request)
@@ -497,14 +507,67 @@ class DashboardController extends Controller
         return response()->streamDownload(function () use ($summaries, $corporateTimezone, $from, $to) { $out = fopen('php://output', 'w'); fwrite($out, "\xEF\xBB\xBF"); $this->csvRow($out, ['Periodo exportado','Zona horaria',$from.' a '.$to,$corporateTimezone]); $this->csvRow($out, []); $this->csvRow($out, ['Fecha','Empleado','Departamento','País','Horas Activo','Horas Inactivo','Horas Bloqueado','Primera Actividad','Última Actividad']); foreach ($summaries as $summary) $this->csvRow($out, [$summary->summary_date,$summary->employee_name,$summary->department,$summary->country,number_format($summary->total_active_seconds / 3600, 2),number_format($summary->total_idle_seconds / 3600, 2),number_format($summary->total_locked_seconds / 3600, 2),$summary->first_activity ? Carbon::parse($summary->first_activity, 'UTC')->setTimezone($corporateTimezone)->format('Y-m-d H:i:s') : '—',$summary->last_activity ? Carbon::parse($summary->last_activity, 'UTC')->setTimezone($corporateTimezone)->format('Y-m-d H:i:s') : '—']); fclose($out); }, 'worklive-reporte-'.$from.'_'.$to.'.csv', ['Content-Type' => 'text/csv; charset=UTF-8']);
     }
 
+    public function exportEmployeeTimeline(Request $request, string $id)
+    {
+        $company = config('worklive.company_id');
+        $employee = DB::table('employees')->where('company_id', $company)->where('id', $id)->firstOrFail();
+        $timezone = $this->corporateTimezone($company);
+        $from = (string) $request->query('date_from', Carbon::now($timezone)->subDays(29)->toDateString());
+        $to = (string) $request->query('date_to', Carbon::now($timezone)->toDateString());
+        if ($from > $to) [$from, $to] = [$to, $from];
+        $query = $this->timelineEventQuery($request, $timezone, $from, $to, $id)->where('event_timestamp', '>=', Carbon::now('UTC')->subDays(30));
+        if ($request->filled('app')) $query->where('app', 'like', '%'.$request->string('app').'%');
+        if ($request->filled('domain')) $query->where('domain', 'like', '%'.$request->string('domain').'%');
+        if ($request->boolean('blocked_only')) $query->whereIn('event_type', ['blocked', 'blocked-site']);
+        return response()->streamDownload(function () use ($query, $timezone, $from, $to, $employee) {
+            $out = fopen('php://output', 'w'); fwrite($out, "\xEF\xBB\xBF");
+            $this->csvRow($out, ['Timeline de actividad', 'Empleado', $employee->name, 'Periodo', $from.' a '.$to, 'Zona horaria', $timezone]); $this->csvRow($out, []);
+            $this->csvRow($out, ['Momento', 'Empleado', 'Departamento', 'Tipo de evento', 'Aplicación', 'Dominio', 'Título', 'Duración (segundos)', 'Agente']);
+            foreach ($query->orderBy('event_timestamp')->orderBy('id')->cursor() as $event) $this->csvRow($out, [Carbon::parse($event->event_timestamp, 'UTC')->setTimezone($timezone)->format('Y-m-d H:i:s'), $event->employee_name, $event->department, $event->event_type, $event->app, $event->domain, $event->title, (int) $event->duration, $event->agent_id]);
+            fclose($out);
+        }, "worklive-timeline-{$employee->id}-{$from}_{$to}.csv", ['Content-Type' => 'text/csv; charset=UTF-8']);
+    }
+
+    public function exportEmployeeTimelinePdf(Request $request, string $id)
+    {
+        $company = config('worklive.company_id'); $employee = DB::table('employees')->where('company_id', $company)->where('id', $id)->firstOrFail(); $timezone = $this->corporateTimezone($company);
+        $from = (string) $request->query('date_from', Carbon::now($timezone)->subDays(29)->toDateString()); $to = (string) $request->query('date_to', Carbon::now($timezone)->toDateString()); if ($from > $to) [$from, $to] = [$to, $from];
+        $query = $this->timelineEventQuery($request, $timezone, $from, $to, $id)->where('event_timestamp', '>=', Carbon::now('UTC')->subDays(30));
+        if ($request->filled('app')) $query->where('app', 'like', '%'.$request->string('app').'%'); if ($request->filled('domain')) $query->where('domain', 'like', '%'.$request->string('domain').'%'); if ($request->boolean('blocked_only')) $query->whereIn('event_type', ['blocked', 'blocked-site']);
+        $events = $query->orderBy('event_timestamp')->orderBy('id')->limit(10000)->get()->each(fn ($event) => $event->display_timestamp = Carbon::parse($event->event_timestamp, 'UTC')->setTimezone($timezone));
+        $pdf = new Fpdi();
+        $temporaryFiles = [];
+        $chunks = $events->chunk(400);
+        if ($chunks->isEmpty()) $chunks = collect([collect()]);
+        foreach ($chunks as $chunk) {
+            $dompdf = new Dompdf(['isRemoteEnabled' => false, 'isHtml5ParserEnabled' => false]);
+            $dompdf->setPaper('a4', 'landscape');
+            $dompdf->loadHtml(view('reports.timeline-pdf', ['events' => $chunk, 'from' => $from, 'to' => $to, 'corporateTimezone' => $timezone, 'selectedEmployees' => collect([$employee])])->render());
+            $dompdf->render();
+            $temporaryFile = tempnam(sys_get_temp_dir(), 'worklive-employee-timeline-');
+            file_put_contents($temporaryFile, $dompdf->output());
+            $temporaryFiles[] = $temporaryFile;
+            $pageCount = $pdf->setSourceFile($temporaryFile);
+            for ($page = 1; $page <= $pageCount; $page++) {
+                $template = $pdf->importPage($page);
+                $size = $pdf->getTemplateSize($template);
+                $pdf->AddPage($size['orientation'], [$size['width'], $size['height']]);
+                $pdf->useTemplate($template);
+            }
+            unset($dompdf);
+            gc_collect_cycles();
+        }
+        foreach ($temporaryFiles as $temporaryFile) @unlink($temporaryFile);
+        return response($pdf->Output('S'), 200, ['Content-Type' => 'application/pdf', 'Content-Disposition' => "attachment; filename=worklive-timeline-{$employee->id}-{$from}_{$to}.pdf"]);
+    }
+
     public function exportTimeline(Request $request)
     {
         $corporateTimezone = $this->corporateTimezone();
         $from = (string) $request->query('date_from', now($corporateTimezone)->startOfMonth()->toDateString());
         $to = (string) $request->query('date_to', now($corporateTimezone)->toDateString());
         if ($from > $to) [$from, $to] = [$to, $from];
-        $query = DB::table('activity_events')->where('company_id', config('worklive.company_id'))->whereBetween('event_timestamp', [Carbon::parse($from, $corporateTimezone)->startOfDay()->utc(), Carbon::parse($to, $corporateTimezone)->endOfDay()->utc()]);
-        $this->applyReportEventFilters($query, $request);
+        $query = $this->timelineEventQuery($request, $corporateTimezone, $from, $to);
         return response()->streamDownload(function () use ($query, $corporateTimezone, $from, $to) {
             $out = fopen('php://output', 'w');
             fwrite($out, "\xEF\xBB\xBF");
@@ -514,6 +577,42 @@ class DashboardController extends Controller
             foreach ($query->orderBy('event_timestamp')->orderBy('id')->cursor() as $event) $this->csvRow($out, [Carbon::parse($event->event_timestamp, 'UTC')->setTimezone($corporateTimezone)->format('Y-m-d H:i:s'), $event->employee_name, $event->department, $event->event_type, $event->app, $event->domain, $event->title, (int) $event->duration, $event->agent_id]);
             fclose($out);
         }, "worklive-timeline-{$from}_{$to}.csv", ['Content-Type' => 'text/csv; charset=UTF-8']);
+    }
+
+    public function exportTimelinePdf(Request $request)
+    {
+        $corporateTimezone = $this->corporateTimezone();
+        $from = (string) $request->query('date_from', now($corporateTimezone)->startOfMonth()->toDateString());
+        $to = (string) $request->query('date_to', now($corporateTimezone)->toDateString());
+        if ($from > $to) [$from, $to] = [$to, $from];
+        $query = $this->timelineEventQuery($request, $corporateTimezone, $from, $to);
+        $events = $query->orderBy('event_timestamp')->orderBy('id')->limit(10000)->get()
+            ->each(fn ($event) => $event->display_timestamp = Carbon::parse($event->event_timestamp, 'UTC')->setTimezone($corporateTimezone));
+        $selectedEmployees = $this->timelineSelectedEmployees($request, config('worklive.company_id'));
+        $pdf = new Fpdi();
+        $temporaryFiles = [];
+        $chunks = $events->chunk(400);
+        if ($chunks->isEmpty()) $chunks = collect([collect()]);
+        foreach ($chunks as $chunk) {
+            $dompdf = new Dompdf(['isRemoteEnabled' => false, 'isHtml5ParserEnabled' => false]);
+            $dompdf->setPaper('a4', 'landscape');
+            $dompdf->loadHtml(view('reports.timeline-pdf', ['events' => $chunk, 'from' => $from, 'to' => $to, 'corporateTimezone' => $corporateTimezone, 'selectedEmployees' => $selectedEmployees])->render());
+            $dompdf->render();
+            $temporaryFile = tempnam(sys_get_temp_dir(), 'worklive-timeline-');
+            file_put_contents($temporaryFile, $dompdf->output());
+            $temporaryFiles[] = $temporaryFile;
+            $pageCount = $pdf->setSourceFile($temporaryFile);
+            for ($page = 1; $page <= $pageCount; $page++) {
+                $template = $pdf->importPage($page);
+                $size = $pdf->getTemplateSize($template);
+                $pdf->AddPage($size['orientation'], [$size['width'], $size['height']]);
+                $pdf->useTemplate($template);
+            }
+            unset($dompdf);
+            gc_collect_cycles();
+        }
+        foreach ($temporaryFiles as $temporaryFile) @unlink($temporaryFile);
+        return response($pdf->Output('S'), 200, ['Content-Type' => 'application/pdf', 'Content-Disposition' => "attachment; filename=worklive-timeline-{$from}_{$to}.pdf"]);
     }
 
     private function csvRow($stream, array $values): void
@@ -574,7 +673,11 @@ class DashboardController extends Controller
 
     private function applyReportFilters($query, Request $request): void
     {
-        foreach (['employee_id', 'department', 'country'] as $field) {
+        $selectedIds = $this->reportEmployeeIds($request, config('worklive.company_id'));
+        if ($selectedIds !== null) {
+            $selectedIds === [] ? $query->whereRaw('1 = 0') : $query->whereIn('employee_id', $selectedIds);
+        }
+        foreach (['department', 'country'] as $field) {
             $value = trim((string) $request->query($field, 'All'));
             if ($value !== '' && $value !== 'All') $query->where($field, $value);
         }
@@ -582,9 +685,94 @@ class DashboardController extends Controller
 
     private function applyReportEventFilters($query, Request $request): void
     {
-        foreach (['employee_id', 'department', 'country'] as $field) { $value = trim((string) $request->query($field, 'All')); if ($value !== '' && $value !== 'All') $query->where($field, $value); }
+        $this->applyReportFilters($query, $request);
         $eventType = trim((string) $request->query('timeline_event_type', 'all')); if ($eventType !== '' && $eventType !== 'all') $query->where('event_type', $eventType);
         $search = trim((string) $request->query('timeline_search', '')); if ($search !== '') $query->where(fn ($q) => $q->where('app', 'like', '%'.$search.'%')->orWhere('domain', 'like', '%'.$search.'%')->orWhere('title', 'like', '%'.$search.'%')->orWhere('employee_name', 'like', '%'.$search.'%'));
+    }
+
+    private function timelineEventQuery(Request $request, string $timezone, string $from, string $to, ?string $employeeId = null)
+    {
+        $query = DB::table('activity_events')->where('company_id', config('worklive.company_id'));
+        $this->applyTimelineWindow($query, $request, $timezone, $from, $to);
+        $selectedIds = $employeeId !== null ? [$employeeId] : $this->reportEmployeeIds($request, config('worklive.company_id'));
+        if ($selectedIds !== null) {
+            $selectedIds === [] ? $query->whereRaw('1 = 0') : $query->whereIn('employee_id', $selectedIds);
+        }
+        foreach (['department', 'country'] as $field) {
+            $value = trim((string) $request->query($field, 'All'));
+            if ($value !== '' && $value !== 'All') {
+                $ids = DB::table('employees')->where('company_id', config('worklive.company_id'))->where($field, $value)->pluck('id');
+                $ids->isEmpty() ? $query->whereRaw('1 = 0') : $query->whereIn('employee_id', $ids);
+            }
+        }
+        $eventType = trim((string) $request->query($employeeId !== null ? 'event_type' : 'timeline_event_type', 'all'));
+        if ($eventType !== '' && $eventType !== 'all') $query->where('event_type', $eventType);
+        $search = trim((string) $request->query($employeeId !== null ? 'event_search' : 'timeline_search', ''));
+        if ($search !== '') $query->where(fn ($q) => $q->where('app', 'like', '%'.$search.'%')->orWhere('domain', 'like', '%'.$search.'%')->orWhere('title', 'like', '%'.$search.'%')->orWhere('employee_name', 'like', '%'.$search.'%'));
+        return $query;
+    }
+
+    private function applyTimelineWindow($query, Request $request, string $timezone, string $from, string $to): void
+    {
+        $timeFrom = trim((string) $request->query('time_from', ''));
+        $timeTo = trim((string) $request->query('time_to', ''));
+        foreach (['time_from' => $timeFrom, 'time_to' => $timeTo] as $field => $value) {
+            if ($value !== '' && ! preg_match('/^([01]\d|2[0-3]):[0-5]\d$/', $value)) {
+                throw ValidationException::withMessages([$field => 'La hora debe tener el formato HH:MM.']);
+            }
+        }
+        if ($timeFrom !== '' && $timeTo !== '' && $timeFrom > $timeTo) {
+            throw ValidationException::withMessages(['time_to' => 'La hora final debe ser mayor o igual a la hora inicial.']);
+        }
+        $rawFrom = Carbon::parse($from, $timezone)->startOfDay()->utc();
+        $rawTo = Carbon::parse($to, $timezone)->endOfDay()->utc();
+        $query->whereBetween('event_timestamp', [$rawFrom, $rawTo]);
+        if ($timeFrom === '' && $timeTo === '') return;
+        $query->where(function ($windowQuery) use ($from, $to, $timezone, $timeFrom, $timeTo, $rawFrom, $rawTo) {
+            for ($date = Carbon::parse($from, $timezone); $date->lte(Carbon::parse($to, $timezone)); $date->addDay()) {
+                $start = $timeFrom === '' ? $date->copy()->startOfDay() : $date->copy()->setTimeFromTimeString($timeFrom);
+                $end = $timeTo === '' ? $date->copy()->endOfDay() : $date->copy()->setTimeFromTimeString($timeTo)->endOfMinute();
+                $start = $start->utc()->max($rawFrom); $end = $end->utc()->min($rawTo);
+                if ($start->lte($end)) $windowQuery->orWhereBetween('event_timestamp', [$start, $end]);
+            }
+        });
+    }
+
+    private function reportEmployeeIds(Request $request, string $company): ?array
+    {
+        if ($request->boolean('report_all') || $request->boolean('timeline_all')) return null;
+        if ($request->has('employee_selection')) {
+            $ids = $request->query('employee_ids', []);
+            if (! is_array($ids)) $ids = [$ids];
+            $ids = collect($ids)->map(fn ($id) => trim((string) $id))->filter()->unique()->values();
+            return $ids->isEmpty() ? [] : DB::table('employees')->where('company_id', $company)->whereIn('id', $ids)->pluck('id')->all();
+        }
+        if (! $request->has('employee_ids')) {
+            $single = trim((string) $request->query('employee_id', 'All'));
+            if ($single === '' || $single === 'All') return null;
+            return DB::table('employees')->where('company_id', $company)->where('id', $single)->pluck('id')->all();
+        }
+        $ids = $request->query('employee_ids', []);
+        if (! is_array($ids)) $ids = [$ids];
+        $ids = collect($ids)->map(fn ($id) => trim((string) $id))->filter()->unique()->values();
+        return $ids->isEmpty() ? [] : DB::table('employees')->where('company_id', $company)->whereIn('id', $ids)->pluck('id')->all();
+    }
+
+    private function timelineEmployeeIds(Request $request, string $company): ?array
+    {
+        return $this->reportEmployeeIds($request, $company);
+    }
+
+    private function timelineSelectedEmployees(Request $request, string $company): Collection
+    {
+        $query = DB::table('employees')->where('company_id', $company)->orderBy('name');
+        $ids = $this->timelineEmployeeIds($request, $company);
+        if ($ids !== null) $query->whereIn('id', $ids);
+        foreach (['department', 'country'] as $field) {
+            $value = trim((string) $request->query($field, 'All'));
+            if ($value !== '' && $value !== 'All') $query->where($field, $value);
+        }
+        return $query->get(['id', 'name']);
     }
 
     public function policies()

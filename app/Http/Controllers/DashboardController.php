@@ -349,7 +349,7 @@ class DashboardController extends Controller
         $to = (string) $request->query('date_to', $request->query('filter_date', now($corporateTimezone)->toDateString()));
         if ($from > $to) [$from, $to] = [$to, $from];
         $tab = (string) $request->query('tab', 'overview');
-        if (!in_array($tab, ['overview', 'attendance', 'productivity', 'consolidated', 'incidents', 'technical', 'timeline'], true)) $tab = 'overview';
+        if (!in_array($tab, ['overview', 'attendance', 'productivity', 'consolidated', 'incidents', 'technical', 'timeline', 'devices'], true)) $tab = 'overview';
         $query = DB::table('daily_summaries')->where('company_id', $company)->whereBetween('summary_date', [$from, $to]);
         $this->applyReportFilters($query, $request);
         $summaries = $query->orderByDesc('summary_date')->orderBy('employee_name')->get();
@@ -444,7 +444,15 @@ class DashboardController extends Controller
         $timelineAll = $reportAll;
         $timeFrom = trim((string) $request->query('time_from', ''));
         $timeTo = trim((string) $request->query('time_to', ''));
-        return view('reports.index', compact('summaries', 'employeeRows', 'attendanceRows', 'attendanceMetrics', 'incidents', 'metrics', 'employees', 'departments', 'countries', 'corporateTimezone', 'from', 'to', 'tab', 'workStart', 'workEnd', 'lateGrace', 'earlyGrace', 'consolidatedApps', 'consolidatedDomains', 'consolidatedBuckets', 'technicalRows', 'technicalEventTypes', 'technicalMetrics', 'technicalDetailMode', 'technicalGroupBy', 'technicalSearch', 'technicalEventType', 'technicalEventTypesFilter', 'technicalDetailRows', 'timelineEvents', 'timelineEventType', 'timelineSearch', 'timelinePerPage', 'timelineEventTypes', 'timelineTotalDuration', 'reportEmployees', 'reportSelectedIds', 'reportAll', 'timelineEmployees', 'timelineSelectedIds', 'timelineAll', 'timeFrom', 'timeTo'));
+        $inventoryDevices = $this->deviceInventoryQuery($request, $company)->get();
+        $inventoryDevices->each(function ($device) use ($corporateTimezone) {
+            $device->last_sync_display = $device->last_sync ? Carbon::parse($device->last_sync, 'UTC')->setTimezone($corporateTimezone) : null;
+            $minutes = $device->last_sync_display?->diffInMinutes(Carbon::now($corporateTimezone));
+            $device->sync_status = $minutes === null ? 'pending' : ($minutes <= 5 ? 'live' : 'stale');
+        });
+        $inventoryLive = $inventoryDevices->where('sync_status', 'live')->count();
+        $inventoryUnassigned = $inventoryDevices->whereNull('employee_id')->count();
+        return view('reports.index', compact('summaries', 'employeeRows', 'attendanceRows', 'attendanceMetrics', 'incidents', 'metrics', 'employees', 'departments', 'countries', 'corporateTimezone', 'from', 'to', 'tab', 'workStart', 'workEnd', 'lateGrace', 'earlyGrace', 'consolidatedApps', 'consolidatedDomains', 'consolidatedBuckets', 'technicalRows', 'technicalEventTypes', 'technicalMetrics', 'technicalDetailMode', 'technicalGroupBy', 'technicalSearch', 'technicalEventType', 'technicalEventTypesFilter', 'technicalDetailRows', 'timelineEvents', 'timelineEventType', 'timelineSearch', 'timelinePerPage', 'timelineEventTypes', 'timelineTotalDuration', 'reportEmployees', 'reportSelectedIds', 'reportAll', 'timelineEmployees', 'timelineSelectedIds', 'timelineAll', 'timeFrom', 'timeTo', 'inventoryDevices', 'inventoryLive', 'inventoryUnassigned'));
     }
 
     public function devices(Request $request)
@@ -648,6 +656,46 @@ class DashboardController extends Controller
         $sheet->freezePane('A5'); $sheet->setAutoFilter("A4:I".max(4, $row - 1));
         foreach (range('A', 'I') as $column) $sheet->getColumnDimension($column)->setAutoSize(true);
         return response()->streamDownload(fn () => (new Xlsx($sheet->getParent()))->save('php://output'), "worklive-reporte-{$from}_{$to}.xlsx", ['Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet']);
+    }
+
+    public function exportDevicesXlsx(Request $request)
+    {
+        $timezone = $this->corporateTimezone();
+        $devices = $this->deviceInventoryQuery($request, config('worklive.company_id'))->get();
+        $sheet = (new Spreadsheet())->getActiveSheet();
+        $sheet->setTitle('Inventario dispositivos');
+        $sheet->mergeCells('A1:N1')->setCellValue('A1', 'WorkLive Pro · Inventario técnico de dispositivos');
+        $sheet->mergeCells('A2:N2')->setCellValue('A2', 'Generado: '.Carbon::now($timezone)->format('d/m/Y H:i:s').' · Zona horaria: '.$timezone);
+        $sheet->fromArray(['Dispositivo','Responsable','Departamento','País','Marca','Modelo','Procesador','RAM','Almacenamiento','Serie','Sistema operativo','IP local','Versión agente','Última sincronización','Estado'], null, 'A4');
+        $row = 5;
+        foreach ($devices as $device) {
+            $lastSync = $device->last_sync ? Carbon::parse($device->last_sync, 'UTC')->setTimezone($timezone) : null;
+            $minutes = $lastSync?->diffInMinutes(Carbon::now($timezone));
+            $status = $minutes === null ? 'Pendiente' : ($minutes <= 5 ? 'En línea' : 'Sin señal reciente');
+            $sheet->fromArray([[$device->hostname ?: 'Equipo sin nombre', $device->employee_name ?: 'Sin responsable', $device->employee_department ?: '—', $device->employee_country ?: '—', $device->brand ?: '—', $device->model ?: '—', $device->processor ?: '—', $device->ram ?: '—', $device->storage ?: ($device->disk_total_gb ? $device->disk_total_gb.' GB' : '—'), $device->serial_number ?: '—', $device->os ?: '—', $device->ip ?: '—', $device->version ?: '—', $lastSync?->format('d/m/Y H:i:s') ?: '—', $status]], null, "A{$row}");
+            $row++;
+        }
+        $sheet->getStyle('A1:O1')->getFont()->setBold(true)->setSize(15)->getColor()->setRGB('312E81');
+        $sheet->getStyle('A4:O4')->getFont()->setBold(true)->getColor()->setRGB('FFFFFF');
+        $sheet->getStyle('A4:O4')->getFill()->setFillType('solid')->getStartColor()->setRGB('4F46E5');
+        $sheet->freezePane('A5'); $sheet->setAutoFilter('A4:O'.max(4, $row - 1));
+        foreach (range('A', 'O') as $column) $sheet->getColumnDimension($column)->setAutoSize(true);
+        return response()->streamDownload(fn () => (new Xlsx($sheet->getParent()))->save('php://output'), 'worklive-inventario-dispositivos.xlsx', ['Content-Type' => 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet']);
+    }
+
+    private function deviceInventoryQuery(Request $request, string $company)
+    {
+        $selectedIds = $this->reportEmployeeIds($request, $company);
+        return DB::table('devices')->leftJoin('employees', function ($join) use ($company) {
+            $join->on('employees.id', '=', 'devices.employee_id')->where('employees.company_id', '=', $company);
+        })->where('devices.company_id', $company)
+            ->when($selectedIds !== null, fn ($q) => $selectedIds === [] ? $q->whereRaw('1 = 0') : $q->whereIn('devices.employee_id', $selectedIds))
+            ->when(($department = trim((string) $request->query('department', 'All'))) !== '' && $department !== 'All', fn ($q) => $q->where('employees.department', $department))
+            ->when(($country = trim((string) $request->query('country', 'All'))) !== '' && $country !== 'All', fn ($q) => $q->where('employees.country', $country))
+            ->when(($search = trim((string) $request->query('device_search', ''))) !== '', function ($q) use ($search) {
+                $term = '%'.$search.'%';
+                $q->where(fn ($sub) => $sub->where('devices.hostname', 'like', $term)->orWhere('devices.serial_number', 'like', $term)->orWhere('devices.brand', 'like', $term)->orWhere('devices.model', 'like', $term)->orWhere('devices.os', 'like', $term)->orWhere('employees.name', 'like', $term));
+            })->select('devices.*', 'employees.name as employee_name', 'employees.department as employee_department', 'employees.country as employee_country')->orderBy('employees.name')->orderBy('devices.hostname');
     }
 
     public function exportReportsPdf(Request $request)
